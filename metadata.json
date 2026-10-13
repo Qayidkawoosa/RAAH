@@ -1,0 +1,10 @@
+{
+  "name": "Remix: Raasta Kashmir ",
+  "description": "AI-powered School Transport Safety Platform",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

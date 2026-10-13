@@ -1,0 +1,23 @@
+{
+  "name": "raasta-kashmir-server",
+  "version": "1.0.0",
+  "description": "Raasta Kashmir backend — Express + Socket.IO + MongoDB + Gemini AI Safety Copilot",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "seed": "node scripts/seedDb.js",
+    "seed:users": "node scripts/seedUsers.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "mongoose": "^8.5.0",
+    "socket.io": "^4.7.5"
+  }
+}

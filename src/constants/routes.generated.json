@@ -1,0 +1,17 @@
+{
+  "JK-01-A-1234": {
+    "routeName": "Hazratbal Line",
+    "coordinates": [
+      { "latitude": 34.1347, "longitude": 74.8008 },
+      { "latitude": 34.1285, "longitude": 74.8414 },
+      { "latitude": 34.0790, "longitude": 74.8320 },
+      { "latitude": 34.0660, "longitude": 74.8230 }
+    ],
+    "stops": [
+      { "id": "stop1", "name": "Soura", "position": { "latitude": 34.1347, "longitude": 74.8008 } },
+      { "id": "stop2", "name": "Hazratbal", "position": { "latitude": 34.1285, "longitude": 74.8414 } },
+      { "id": "stop3", "name": "Dalgate", "position": { "latitude": 34.0790, "longitude": 74.8320 } },
+      { "id": "school", "name": "Demo Public School", "position": { "latitude": 34.0660, "longitude": 74.8230 } }
+    ]
+  }
+}

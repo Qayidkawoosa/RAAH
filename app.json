@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "RAAH",
+    "slug": "RAAH",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.raasta.kashmir",
+      "config": {
+        "googleMapsApiKey": "REPLACE_WITH_YOUR_API_KEY"
+      }
+    },
+    "android": {
+      "package": "com.raasta.kashmir",
+      "versionCode": 1,
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "CAMERA"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#0D0D14",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "config": {
+        "googleMaps": {
+          "apiKey": "REPLACE_WITH_YOUR_API_KEY"
+        }
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 220,
+          "backgroundColor": "#6C5CE7",
+          "dark": {
+            "backgroundColor": "#0D0D14"
+          }
+        }
+      ],
+      "expo-location"
+    ]
+  }
+}
