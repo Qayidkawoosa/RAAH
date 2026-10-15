@@ -1,0 +1,12 @@
+node_modules
+dist
+# Keep environment variables out of version control
+.env
+.env.local
+
+# IDE and Agent skills folders
+.agents/
+.windsurf/
+.claude/
+
+/generated/prisma
