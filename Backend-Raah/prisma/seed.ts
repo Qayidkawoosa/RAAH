@@ -1,7 +1,5 @@
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../src/config/db';
 import { hashPassword } from '../src/utils/password';
-
-const prisma = new PrismaClient();
 
 export async function seedDatabase() {
   console.log('========================================================');
