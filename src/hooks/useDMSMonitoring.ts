@@ -21,7 +21,7 @@ export function useDMSMonitoring(options: UseDMSMonitoringOptions = {}) {
   const [cameraError, setCameraError] = useState<string | null>(() => backgroundDmsService.getCameraError());
   const [cameraSource, setCameraSource] = useState<'usb' | 'front'>(() => backgroundDmsService.getCameraSource());
   const [isUsbConnected, setIsUsbConnected] = useState<boolean>(() => backgroundDmsService.isUsbConnected());
-  const isSimulatingRef = useRef<NodeJS.Timeout | null>(null);
+  const isSimulatingRef = useRef<any>(null);
 
   // Sync engine metadata
   useEffect(() => {

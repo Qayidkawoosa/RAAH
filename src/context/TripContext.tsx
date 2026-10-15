@@ -20,8 +20,11 @@ import { locationService } from '../services/locationService';
 import { startDriveSimulation } from '../services/demo/driveSimulator';
 import { realtimeService } from '../services/realtime';
 import { tripService } from '../services/tripService';
+import { isLiveBackend } from '../config/env';
 import { ETA_FALLBACK_SPEED_KMH } from '../constants/safety';
 import { activeSchedule } from '../constants/schedule';
+import { backgroundDmsService } from '../services/dms/backgroundDmsService';
+import { dmsEngine } from '../services/dms/dmsEngine';
 
 export interface UpcomingPickup {
   stopName: string;
@@ -83,6 +86,15 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const endTrip = useCallback(async (reason?: string): Promise<Trip | null> => {
     stopWatchingRef.current?.();
     stopWatchingRef.current = null;
+
+    // Immediately stop DMS camera and shut down active anomaly tracking
+    try {
+      await backgroundDmsService.stop();
+    } catch (dmsErr) {
+      console.warn('Failed to stop DMS service on trip end:', dmsErr);
+    }
+    dmsEngine.setTrackingActive(false);
+
     const current = tripRef.current;
     if (!current) return null;
     const endedAt = Date.now();
@@ -267,13 +279,29 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setTrip(newTrip);
       setLiveScore(100);
 
-      const hasPermission = await locationService.requestPermission();
-      if (hasPermission) {
-        setIsSimulatedGps(false);
-        stopWatchingRef.current = await locationService.watchPosition(handlePoint);
-      } else {
+      // Initialize DMS Engine for active trip
+      if (profile.role === 'driver') {
+        dmsEngine.tripId = newTrip.id;
+        dmsEngine.busId = newTrip.busNo;
+        dmsEngine.driverId = profile.uid;
+        dmsEngine.setTrackingActive(true);
+      }
+
+      // On Web or Demo mode (no live backend), always run the drive simulation along the route
+      // so the demo bus visibly drives along the Dal Lake route with speed and stop progress!
+      const isWeb = typeof window !== 'undefined';
+      if (!isLiveBackend || isWeb) {
         setIsSimulatedGps(true);
         stopWatchingRef.current = startDriveSimulation(handlePoint, routePath);
+      } else {
+        const hasPermission = await locationService.requestPermission();
+        if (hasPermission) {
+          setIsSimulatedGps(false);
+          stopWatchingRef.current = await locationService.watchPosition(handlePoint);
+        } else {
+          setIsSimulatedGps(true);
+          stopWatchingRef.current = startDriveSimulation(handlePoint, routePath);
+        }
       }
     },
     [handlePoint, simulationRoutePath]

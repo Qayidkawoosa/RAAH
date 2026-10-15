@@ -35,11 +35,11 @@ export function evaluateContrastMethod(imageData, path, options = {}) {
   const nx = -dy / len;
   const ny = dx / len;
 
-  // Flank sampling distance (min 48px to stay safely outside 40-50px wide belt)
-  const safeFlankOffset = Math.max(48, Math.round(flankOffsetPx || 52));
+  // Flank sampling distance (proportional to driver torso scale, minimum 48px)
+  const safeFlankOffset = Math.max(48, Math.round(flankOffsetPx || 48));
 
-  // Sweep candidate transverse offsets [-24, 0, +24] if no observed path is locked
-  const candidateOffsets = (observedPath && observedPath.start) ? [0] : [0, -24, 24];
+  // Evaluate strictly along the locked observed path or target anatomical trajectory
+  const candidateOffsets = [0];
 
   let bestResult = null;
 
@@ -112,7 +112,22 @@ export function evaluateContrastMethod(imageData, path, options = {}) {
 
     const lumContrastLeft = Math.abs(avgLeftLum - avgStrapLum) / Math.max(20, (avgLeftLum + avgStrapLum) / 2);
     const lumContrastRight = Math.abs(avgRightLum - avgStrapLum) / Math.max(20, (avgRightLum + avgStrapLum) / 2);
-    const lumContrast = Math.max(lumContrastLeft, lumContrastRight) * 0.70 + ((lumContrastLeft + lumContrastRight) / 2) * 0.30;
+
+    // Bilateral Flank Consistency & Window Glare Suppression:
+    // A genuine seatbelt rests on the chest/shirt, meaning both left and right flanks sample the driver's clothing.
+    // When one flank samples dark clothing and the other samples bright window/backlight glare, the two flanks diverge wildly.
+    const flankDivergence = Math.abs(avgLeftLum - avgRightLum) / Math.max(25, (avgLeftLum + avgRightLum) / 2);
+
+    // A real ribbon strap must exhibit bilateral contrast (contrast on BOTH sides of the strap):
+    const minLumContrast = Math.min(lumContrastLeft, lumContrastRight);
+    const maxLumContrast = Math.max(lumContrastLeft, lumContrastRight);
+    let lumContrast = (minLumContrast * 0.65) + (maxLumContrast * 0.35);
+
+    // If one flank samples extreme background backlight/window glare, heavily penalize unilateral edge false positives
+    if (flankDivergence > 0.45) {
+      const glarePenalty = Math.max(0.15, 1.0 - (flankDivergence - 0.45) * 1.6);
+      lumContrast *= glarePenalty;
+    }
 
     const dLeftR = (flankLeftRSum / validPoints) - (strapRSum / validPoints);
     const dLeftG = (flankLeftGSum / validPoints) - (strapGSum / validPoints);
@@ -124,7 +139,13 @@ export function evaluateContrastMethod(imageData, path, options = {}) {
     const dRightB = (flankRightBSum / validPoints) - (strapBSum / validPoints);
     const deltaERight = Math.hypot(dRightR, dRightG, dRightB);
 
-    const deltaE = Math.max(deltaELeft, deltaERight) * 0.70 + ((deltaELeft + deltaERight) / 2) * 0.30;
+    const minDeltaE = Math.min(deltaELeft, deltaERight);
+    const maxDeltaE = Math.max(deltaELeft, deltaERight);
+    let deltaE = (minDeltaE * 0.65) + (maxDeltaE * 0.35);
+    if (flankDivergence > 0.45) {
+      const glarePenalty = Math.max(0.15, 1.0 - (flankDivergence - 0.45) * 1.6);
+      deltaE *= glarePenalty;
+    }
 
     let varianceSum = 0;
     for (const l of strapLums) {
@@ -133,7 +154,7 @@ export function evaluateContrastMethod(imageData, path, options = {}) {
     const strapStdDev = Math.sqrt(varianceSum / validPoints);
     const uniformityScore = Math.max(0.0, Math.min(1.0, 1.25 - strapStdDev / 36));
 
-    if (lumContrast < 0.08 && deltaE < 12) {
+    if (lumContrast < 0.12 && deltaE < 16) {
       const candidateRes = {
         methodId: "contrast",
         methodName: "Method C: Dual-Band Color & Texture Contrast",
@@ -151,13 +172,17 @@ export function evaluateContrastMethod(imageData, path, options = {}) {
     }
 
     const contrastMagnitude = Math.min(1.0, (lumContrast / 0.28) * 0.65 + (deltaE / 45) * 0.35);
-    const confidence = Math.min(1.0, contrastMagnitude * (0.45 + 0.55 * uniformityScore));
+    let rawConf = contrastMagnitude * (0.45 + 0.55 * uniformityScore);
+    if (!observedPath) {
+      rawConf *= 0.60; // Gated when Method A has not corroborated a physical strap
+    }
+    const confidence = Math.min(1.0, rawConf);
 
     const candidateRes = {
       methodId: "contrast",
       methodName: "Method C: Dual-Band Color & Texture Contrast",
       confidence: Math.round(confidence * 100) / 100,
-      isFastened: confidence >= 0.32,
+      isFastened: confidence >= 0.38,
       avgStrapLum: Math.round(avgStrapLum),
       avgFlankLum: Math.round(avgFlankLum),
       lumContrast: Math.round(lumContrast * 100) / 100,

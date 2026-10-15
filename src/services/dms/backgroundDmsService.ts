@@ -17,6 +17,7 @@ import {
   detectFaceLandmarks,
   detectPhone,
   detectHands,
+  detectPose,
   extractHeadPose,
   extractDriverBlendshapes,
   createDriverStateEngine,
@@ -25,6 +26,11 @@ import {
   forwardVisionEventToDMSEngine,
   initNativeLandmarkBridge,
   VisionSafetyEvent,
+  extractTorsoGeometry,
+  evaluateHybridFusion,
+  SeatbeltTemporalTracker,
+  createSeatbeltDetectorEngine,
+  SEATBELT_TEMPORAL_STATE,
 } from './visionCueAdapter';
 import {
   isUsbCameraAvailable,
@@ -58,9 +64,12 @@ class BackgroundDmsService {
   private latestHandsRes: any[] = [];
   private latestPhoneRes: any = { hasPhone: false, phones: [] };
   private hiddenCanvas: HTMLCanvasElement | null = null;
+  private seatbeltCanvas: HTMLCanvasElement | null = null;
   private lastSeatbeltCheckTime: number = 0;
   private latestSeatbeltFastened: boolean = false;
-  private consecutiveSeatbeltDetections: number = 0;
+  private seatbeltEngine: any = null;
+  private handsZeroStreak: number = 0;
+  private smoothedHandsCount: number = 0;
   private lastWebFrameTimestamp: number = 0;
   private lastNotificationTime: number = 0;
 
@@ -133,6 +142,14 @@ class BackgroundDmsService {
    * Runs vision algorithms without rendering any video to the driver interface.
    */
   public async start(source?: 'usb' | 'front'): Promise<boolean> {
+    if (!dmsEngine.isTrackingActive) {
+      console.log('[BackgroundDmsService] Standby: DMS tracking is only active during an active driver trip.');
+      this.isRunning = false;
+      this.isConnecting = false;
+      this.notifyListeners();
+      return false;
+    }
+
     if (this.isRunning) return true;
 
     if (source) {
@@ -271,7 +288,17 @@ class BackgroundDmsService {
     }
 
     this.driverEngine = createDriverStateEngine();
-    this.phoneEngine = createPhoneDetectorEngine();
+    this.phoneEngine = createPhoneDetectorEngine({
+      callingConfirmationMs: 1000,
+      dropoutToleranceMs: 750,
+    });
+    this.seatbeltEngine = createSeatbeltDetectorEngine({
+      selectedSide: "AUTO",
+      confidenceThreshold: 0.38,
+      retentionThreshold: 0.22,
+      confirmationWindowMs: 750,
+      unfastenDelayMs: 1500,
+    });
     this.safetyEngine = createSafetyEventEngine({
       cooldownMs: 6000,
       onEvent: (ev: VisionSafetyEvent) => {
@@ -368,107 +395,71 @@ class BackgroundDmsService {
         }
       }
 
-      // Seatbelt optical diagonal strap check (~2 FPS)
-      const SEATBELT_INTERVAL_MS = 500;
+      // Seatbelt optical check (250ms cadence)
+      const SEATBELT_INTERVAL_MS = 250;
       if (now - this.lastSeatbeltCheckTime >= SEATBELT_INTERVAL_MS) {
         this.lastSeatbeltCheckTime = now;
-        if (!hasFace) {
-          this.consecutiveSeatbeltDetections = 0;
-          this.latestSeatbeltFastened = false;
-        } else {
+        const frameWidth = video.videoWidth || 640;
+        const frameHeight = video.videoHeight || 480;
+
+        if (!this.seatbeltEngine) {
+          this.seatbeltEngine = createSeatbeltDetectorEngine({
+            selectedSide: "AUTO",
+            confidenceThreshold: 0.38,
+            retentionThreshold: 0.22,
+            confirmationWindowMs: 750,
+            unfastenDelayMs: 1500,
+          });
+        }
+
+        let poseLandmarks: any = null;
+        if (this.visionModels?.poseLandmarker) {
+          poseLandmarks = detectPose(this.visionModels.poseLandmarker, video, now);
+        }
+        const targetLandmarks = poseLandmarks || (hasFace ? detection?.faceLandmarks : null);
+
+        if (targetLandmarks && frameWidth > 0 && frameHeight > 0) {
           try {
-            if (!this.hiddenCanvas && typeof document !== 'undefined') {
-              this.hiddenCanvas = document.createElement('canvas');
-              this.hiddenCanvas.width = 160;
-              this.hiddenCanvas.height = 120;
+            if (!this.seatbeltCanvas && typeof document !== 'undefined') {
+              this.seatbeltCanvas = document.createElement('canvas');
             }
-            if (this.hiddenCanvas && video.videoWidth > 0) {
-              const ctx = this.hiddenCanvas.getContext('2d', { willReadFrequently: true });
-              if (ctx) {
-                ctx.drawImage(video, 0, 0, 160, 120);
-                const chin = detection?.faceLandmarks?.[152];
-                if (chin && chin.y < 0.70) {
-                  // Probe 4 horizontal slices across the torso below the chin
-                  const sliceY1 = Math.min(98, Math.floor((chin.y + 0.12) * 120));
-                  const sliceY2 = Math.min(104, Math.floor((chin.y + 0.19) * 120));
-                  const sliceY3 = Math.min(110, Math.floor((chin.y + 0.26) * 120));
-                  const sliceY4 = Math.min(116, Math.floor((chin.y + 0.33) * 120));
+            if (this.seatbeltCanvas) {
+              if (this.seatbeltCanvas.width !== frameWidth || this.seatbeltCanvas.height !== frameHeight) {
+                this.seatbeltCanvas.width = frameWidth;
+                this.seatbeltCanvas.height = frameHeight;
+              }
+              const sctx = this.seatbeltCanvas.getContext('2d', { willReadFrequently: true });
+              if (sctx) {
+                // Render horizontally mirrored video frame onto offscreen buffer so pixel coordinates match driver perspective
+                sctx.save();
+                sctx.translate(frameWidth, 0);
+                sctx.scale(-1, 1);
+                sctx.drawImage(video, 0, 0, frameWidth, frameHeight);
+                sctx.restore();
 
-                  const findStrapCenterInSlice = (sliceY: number) => {
-                    const rowData = ctx.getImageData(15, sliceY, 130, 1).data;
-                    const lums: number[] = [];
-                    let totalLum = 0;
-                    for (let x = 0; x < 130; x++) {
-                      const idx = x * 4;
-                      const lum = 0.299 * rowData[idx] + 0.587 * rowData[idx + 1] + 0.114 * rowData[idx + 2];
-                      lums.push(lum);
-                      totalLum += lum;
-                    }
-                    const avgLum = totalLum / 130;
-                    // If the torso slice is uniformly dark, contrast valley cannot confirm a strap without severe false positives
-                    if (avgLum < 50) return -1;
-
-                    let bestValleyCenter = -1;
-                    let bestContrast = 0;
-                    for (let x = 16; x < 114; x++) {
-                      const strapCoreLum = (lums[x - 2] + lums[x] + lums[x + 2]) / 3;
-                      // Seatbelt webbing must be intrinsically dark
-                      if (strapCoreLum > 48) continue;
-
-                      const leftFlank = (lums[x - 14] + lums[x - 11]) / 2;
-                      const rightFlank = (lums[x + 11] + lums[x + 14]) / 2;
-                      const leftContrast = leftFlank - strapCoreLum;
-                      const rightContrast = rightFlank - strapCoreLum;
-                      const valleyDepth = Math.min(leftContrast, rightContrast);
-
-                      // Real seatbelt strap requires high dual-sided contrast against shirt/skin
-                      if (valleyDepth > 60 && valleyDepth > bestContrast) {
-                        bestContrast = valleyDepth;
-                        bestValleyCenter = x + 15;
-                      }
-                    }
-                    return bestValleyCenter;
-                  };
-
-                  const c1 = findStrapCenterInSlice(sliceY1);
-                  const c2 = findStrapCenterInSlice(sliceY2);
-                  const c3 = findStrapCenterInSlice(sliceY3);
-                  const c4 = findStrapCenterInSlice(sliceY4);
-
-                  // A real seatbelt strap is a continuous, collinear diagonal band
-                  let isDiagonalStrap = false;
-                  if (c1 > 0 && c2 > 0 && c3 > 0 && c4 > 0) {
-                    const d12 = c2 - c1;
-                    const d23 = c3 - c2;
-                    const d34 = c4 - c3;
-                    const sameSign = Math.sign(d12) === Math.sign(d23) && Math.sign(d23) === Math.sign(d34);
-                    const realisticSlope = Math.abs(d12) >= 5 && Math.abs(d12) <= 16;
-                    // Collinearity: a straight line has near-identical shifts between equidistant slices
-                    const isCollinear = Math.abs(d12 - d23) <= 1 && Math.abs(d23 - d34) <= 1;
-
-                    if (sameSign && realisticSlope && isCollinear) {
-                      isDiagonalStrap = true;
-                    }
-                  }
-
-                  if (isDiagonalStrap) {
-                    this.consecutiveSeatbeltDetections++;
-                  } else {
-                    this.consecutiveSeatbeltDetections = 0;
-                  }
-
-                  // Require 6 consecutive positive frames (3 full seconds) to confirm fastened
-                  this.latestSeatbeltFastened = this.consecutiveSeatbeltDetections >= 6;
-                } else {
-                  this.consecutiveSeatbeltDetections = 0;
-                  this.latestSeatbeltFastened = false;
-                }
+                const sImageData = sctx.getImageData(0, 0, frameWidth, frameHeight);
+                const seatbeltRes = this.seatbeltEngine.processFrame({
+                  imageData: sImageData,
+                  poseLandmarks: targetLandmarks,
+                  frameWidth,
+                  frameHeight,
+                  timestamp: now,
+                });
+                this.latestSeatbeltFastened = Boolean(seatbeltRes?.isFastened);
               }
             }
-          } catch {
-            this.consecutiveSeatbeltDetections = 0;
-            this.latestSeatbeltFastened = false;
+          } catch (sbErr) {
+            console.warn('[BackgroundDmsService] Seatbelt evaluation error:', sbErr);
           }
+        } else {
+          const seatbeltRes = this.seatbeltEngine.processFrame({
+            imageData: null,
+            poseLandmarks: null,
+            frameWidth,
+            frameHeight,
+            timestamp: now,
+          });
+          this.latestSeatbeltFastened = Boolean(seatbeltRes?.isFastened);
         }
       }
 
@@ -494,7 +485,11 @@ class BackgroundDmsService {
         : (rawBlendshapes.eyeBlinkAvg || 0);
 
       const isEyesClosed = Boolean(state?.eyes?.isMicrosleep || rawBlendshapes.isEyesClosed);
-      const isDistracted = Boolean(state?.pose?.isDistracted || rawHeadPose.isLookingAway || rawBlendshapes.isGazeAway);
+      const isDistracted = Boolean(
+        state?.pose?.isDistracted &&
+        state?.pose?.direction !== 'FORWARD' &&
+        rawHeadPose?.direction !== 'FORWARD'
+      );
 
       // Real-time Phone in Hand & Interaction Evaluation
       const activePhones = this.latestPhoneRes?.phones || [];
@@ -507,76 +502,139 @@ class BackgroundDmsService {
       if (hasDetectedPhone) {
         const pBox = activePhones[0]?.box || this.latestPhoneState?.rawPhones?.[0]?.box;
         const isHandNear = this.latestHandsRes.some((h: any) => {
+          if (!pBox) return false;
+          // Check bounding box intersection if available
+          if (h.bbox) {
+            const ix1 = Math.max(pBox.originX, h.bbox.originX);
+            const iy1 = Math.max(pBox.originY, h.bbox.originY);
+            const ix2 = Math.min(pBox.originX + pBox.width, h.bbox.originX + h.bbox.width);
+            const iy2 = Math.min(pBox.originY + pBox.height, h.bbox.originY + h.bbox.height);
+            if (ix2 > ix1 && iy2 > iy1) return true;
+          }
+          // Or wrist/center within close grip distance (<= 110px)
           const hwX = h.wristPx ? h.wristPx.x : (h.bbox?.originX || 0) + (h.bbox?.width || 0) / 2;
           const hwY = h.wristPx ? h.wristPx.y : (h.bbox?.originY || 0) + (h.bbox?.height || 0) / 2;
-          if (!pBox) return true;
-          const dx = Math.abs(hwX - (pBox.originX + pBox.width / 2));
-          const dy = Math.abs(hwY - (pBox.originY + pBox.height / 2));
-          return dx < 220 && dy < 220;
+          const phoneCenterX = pBox.originX + pBox.width / 2;
+          const phoneCenterY = pBox.originY + pBox.height / 2;
+          const dist = Math.hypot(hwX - phoneCenterX, hwY - phoneCenterY);
+          return dist <= 110;
         }) || Boolean(this.latestPhoneState?.isHandAssociated);
 
-        phoneInHand = isHandNear || Boolean(pBox && pBox.originY > 80);
+        // Phone is in hand ONLY if confirmed hand association exists
+        phoneInHand = isHandNear;
 
-        if (detection?.faceLandmarks && pBox) {
-          const leftEar = detection.faceLandmarks[234];
-          const rightEar = detection.faceLandmarks[454];
-          const pNormX = (pBox.originX + pBox.width / 2) / (video.videoWidth || 640);
-          const pNormY = (pBox.originY + pBox.height / 2) / (video.videoHeight || 480);
-          const distL = leftEar ? Math.hypot(pNormX - leftEar.x, pNormY - leftEar.y) : 1;
-          const distR = rightEar ? Math.hypot(pNormX - rightEar.x, pNormY - rightEar.y) : 1;
-          if (distL < 0.22 || distR < 0.22) {
-            phoneNearEar = true;
+        // STRICT HIERARCHY: ONLY check Calling/Texting if phone is actively held in hand
+        if (phoneInHand) {
+          if (detection?.faceLandmarks && pBox) {
+            const vw = video.videoWidth || 640;
+            const vh = video.videoHeight || 480;
+            // Left image side (canonical right): tragus 234, preauricular 127, lobule 132, helix 21/54/162, jaw 93/58/172/136
+            const leftCluster = [234, 127, 162, 21, 54, 93, 132, 58, 172, 136];
+            // Right image side (canonical left): tragus 454, preauricular 356, lobule 361, helix 251/284/389, jaw 323/288/397/365
+            const rightCluster = [454, 356, 389, 251, 284, 323, 361, 288, 397, 365];
+
+            const getBoxDist = (idx: number) => {
+              const lm = detection.faceLandmarks[idx];
+              if (!lm) return Infinity;
+              const px = lm.x * vw;
+              const py = lm.y * vh;
+              const cx = Math.max(pBox.originX, Math.min(px, pBox.originX + pBox.width));
+              const cy = Math.max(pBox.originY, Math.min(py, pBox.originY + pBox.height));
+              return Math.hypot(px - cx, py - cy);
+            };
+
+            const minLeftDist = Math.min(...leftCluster.map(getBoxDist));
+            const minRightDist = Math.min(...rightCluster.map(getBoxDist));
+            const minEarDist = Math.min(minLeftDist, minRightDist);
+
+            if (minEarDist <= 110 || this.latestPhoneState?.mode === 'CALLING') {
+              phoneNearEar = true;
+            }
           }
-        }
 
-        if (phoneNearEar || this.latestPhoneState?.mode === 'CALLING') {
-          phoneModeStr = 'calling';
-          phoneDescription = 'Calling (Near Ear)';
-        } else if (phoneInHand && (rawHeadPose.pitch < -14 || rawBlendshapes.isGazeDown || this.latestPhoneState?.mode === 'TEXTING')) {
-          phoneModeStr = 'texting';
-          phoneDescription = 'Texting / Lap';
-        } else if (phoneInHand) {
-          phoneDescription = 'Phone In Hand';
+          if (phoneNearEar || this.latestPhoneState?.mode === 'CALLING') {
+            phoneModeStr = 'calling';
+            phoneDescription = 'Calling (Near Ear)';
+          } else if (rawHeadPose.pitch < -14 || rawBlendshapes.isGazeDown || this.latestPhoneState?.mode === 'TEXTING') {
+            phoneModeStr = 'texting';
+            phoneDescription = 'Texting / Lap';
+          } else {
+            phoneDescription = 'Phone In Hand';
+          }
         } else {
-          phoneDescription = 'Phone Detected';
+          // Phone is detected but NOT in hand (e.g. car dashboard mount/cradle)
+          phoneModeStr = 'none';
+          phoneDescription = 'Phone in Mount / Clear';
         }
       }
 
       // Real-time Hands on Wheel Evaluation
-      let handsOnWheel = true;
-      let handsCount = 2;
+      let handsOnWheel = false;
+      let handsCount = 0;
 
       if (!hasFace) {
         handsOnWheel = false;
         handsCount = 0;
-      } else if (this.visionModels.handLandmarker) {
+        this.smoothedHandsCount = 0;
+        this.handsZeroStreak = 0;
+      } else if (this.visionModels?.handLandmarker) {
         const vHeight = video.videoHeight || 480;
-        const steeringThresholdY = vHeight * 0.38;
+        const vWidth = video.videoWidth || 640;
+
+        // Establish the driver's face & steering zone geometry
+        const chin = detection?.faceLandmarks?.[152];
+        const nose = detection?.faceLandmarks?.[1];
+        const forehead = detection?.faceLandmarks?.[10];
+
+        const chinY = chin ? chin.y * vHeight : vHeight * 0.45;
+        const faceH = (chin && forehead)
+          ? Math.hypot((chin.x - forehead.x) * vWidth, (chin.y - forehead.y) * vHeight)
+          : vHeight * 0.28;
+        const faceRadius = faceH * 0.65;
+
+        // Steering wheel is in the lower cabin/torso zone, below the chin/chest
+        const steeringZoneMinY = Math.max(vHeight * 0.44, chinY + faceH * 0.18);
+        const pBox = activePhones[0]?.box || this.latestPhoneState?.rawPhones?.[0]?.box;
 
         const handsOnWheelList = this.latestHandsRes.filter((h: any) => {
-          const wristY = h.wristPx ? h.wristPx.y : (h.bbox?.originY || 0) + (h.bbox?.height || 0);
-          const isLowerZone = wristY >= steeringThresholdY;
-          if (phoneNearEar || (phoneInHand && h.bbox && activePhones[0]?.box)) {
-            const pBox = activePhones[0]?.box;
-            const dx = Math.abs((h.bbox.originX + h.bbox.width / 2) - (pBox.originX + pBox.width / 2));
-            const dy = Math.abs((h.bbox.originY + h.bbox.height / 2) - (pBox.originY + pBox.height / 2));
-            if (dx < 160 && dy < 160) return false;
+          const hwX = h.wristPx ? h.wristPx.x : (h.bbox?.originX || 0) + (h.bbox?.width || 0) / 2;
+          const hwY = h.wristPx ? h.wristPx.y : (h.bbox?.originY || 0) + (h.bbox?.height || 0) / 2;
+
+          // 1. Hand touching face or scratching head is NOT on wheel
+          if (nose) {
+            const distToNose = Math.hypot(hwX - nose.x * vWidth, hwY - nose.y * vHeight);
+            if (distToNose < faceRadius) return false;
           }
-          return isLowerZone;
+          if (hwY < chinY) return false; // Hand is above chin level
+
+          // 2. Hand holding or operating phone is NOT on wheel
+          if (phoneNearEar) return false;
+          if (pBox) {
+            const pdx = Math.abs(hwX - (pBox.originX + pBox.width / 2));
+            const pdy = Math.abs(hwY - (pBox.originY + pBox.height / 2));
+            if (pdx < 140 && pdy < 140) return false;
+          }
+
+          // 3. Must be situated in the lower steering wheel zone
+          return hwY >= steeringZoneMinY;
         });
 
-        if (this.latestHandsRes.length > 0) {
-          handsCount = handsOnWheelList.length;
-          handsOnWheel = handsCount > 0;
+        const rawDetectedHands = handsOnWheelList.length;
+
+        // Smooth brief 1-frame camera dropouts without creating false positives
+        if (rawDetectedHands > 0) {
+          this.handsZeroStreak = 0;
+          this.smoothedHandsCount = Math.min(2, rawDetectedHands);
         } else {
-          if (phoneInHand) {
-            handsCount = 1;
-            handsOnWheel = true;
-          } else {
-            handsCount = 2;
-            handsOnWheel = true;
+          this.handsZeroStreak++;
+          // Require 2 consecutive frames (~250ms) of absence to confirm hands-off
+          if (this.handsZeroStreak >= 2) {
+            this.smoothedHandsCount = 0;
           }
         }
+
+        handsCount = this.smoothedHandsCount;
+        handsOnWheel = handsCount > 0;
       }
 
       dmsEngine.updateVisionMetrics({
@@ -588,19 +646,21 @@ class BackgroundDmsService {
         isMicrosleeping: isEyesClosed,
         isDistracted,
         distractionReason: isDistracted
-          ? rawHeadPose.pitch > 20
+          ? rawHeadPose.pitch > 22
             ? 'looking_up'
-            : rawHeadPose.pitch < -15
+            : rawHeadPose.pitch < -20
             ? 'looking_down'
-            : rawHeadPose.yaw > 20
+            : rawHeadPose.yaw > 25
             ? 'looking_left'
-            : rawHeadPose.yaw < -20
+            : rawHeadPose.yaw < -25
             ? 'looking_right'
+            : state?.pose?.direction && state.pose.direction.startsWith('GAZE_')
+            ? (state.pose.direction.toLowerCase() as any)
             : 'head_turned'
           : 'normal',
         isYawning: Boolean(state?.mouth?.isYawningNow || rawBlendshapes.isYawningCandidate),
-        isUsingPhone: Boolean(hasDetectedPhone && (phoneInHand || phoneNearEar || phoneModeStr !== 'none')),
-        phoneMode: phoneModeStr,
+        isUsingPhone: Boolean(hasDetectedPhone && phoneInHand && (phoneNearEar || phoneModeStr !== 'none' || this.latestPhoneState?.isConfirmed)),
+        phoneMode: phoneInHand ? phoneModeStr : 'none',
         handsOnWheel,
         seatbeltFastened: this.latestSeatbeltFastened,
         headPose: {
@@ -608,7 +668,7 @@ class BackgroundDmsService {
           pitch: hasFace ? rawHeadPose.pitch : 0,
           roll: hasFace ? rawHeadPose.roll : 0,
           direction: !hasFace ? 'NO_FACE' : rawHeadPose.direction,
-          isLookingAway: rawHeadPose.isLookingAway || rawBlendshapes.isGazeAway,
+          isLookingAway: isDistracted,
         },
         attentionSummary: !hasFace
           ? 'DRIVER ABSENT / NO FACE DETECTED'
@@ -651,17 +711,44 @@ class BackgroundDmsService {
       this.animFrameId = null;
     }
     if (this.webMediaStream) {
-      this.webMediaStream.getTracks().forEach((track) => track.stop());
+      try {
+        this.webMediaStream.getTracks().forEach((track) => track.stop());
+      } catch (e) {}
       this.webMediaStream = null;
     }
     if (this.hiddenVideoElement) {
-      this.hiddenVideoElement.srcObject = null;
-      this.hiddenVideoElement.remove();
+      try {
+        if (this.hiddenVideoElement.srcObject) {
+          const stream = this.hiddenVideoElement.srcObject as MediaStream;
+          stream.getTracks?.().forEach((track) => track.stop());
+          this.hiddenVideoElement.srcObject = null;
+        }
+        this.hiddenVideoElement.pause?.();
+        this.hiddenVideoElement.remove();
+      } catch (e) {}
       this.hiddenVideoElement = null;
     }
+
+    // Fail-safe cleanup: stop any open video media tracks in the document
+    if (typeof document !== 'undefined') {
+      try {
+        const allVideos = document.querySelectorAll('video');
+        allVideos.forEach((vid) => {
+          if (vid.srcObject && 'getTracks' in (vid.srcObject as any)) {
+            try {
+              (vid.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+            } catch (err) {}
+            vid.srcObject = null;
+          }
+        });
+      } catch (e) {}
+    }
+
     this.driverEngine?.reset?.();
     this.phoneEngine?.reset?.();
+    this.seatbeltEngine?.reset?.();
     this.latestPhoneState = null;
+    this.latestSeatbeltFastened = false;
   }
 
   // ==================== NATIVE HEADLESS DETECTION ====================

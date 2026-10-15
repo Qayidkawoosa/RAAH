@@ -23,9 +23,11 @@ import { SPEED_LIMIT_KMH } from '../../constants/safety';
 import { DEMO_BUS_NO, DEMO_ROUTE_PATH_B, ALL_ROUTES } from '../../constants/demoRoute';
 import { AppStackParamList } from '../../navigation/types';
 import { formatKm } from '../../utils/format';
+import { bearingDegrees } from '../../utils/geo';
 import { ScheduleBanner } from '../../components/ScheduleBanner';
 import { DMSHeadsUpDisplay } from '../../components/DMSHeadsUpDisplay';
 import { backgroundDmsService } from '../../services/dms/backgroundDmsService';
+import { dmsEngine } from '../../services/dms/dmsEngine';
 
 type Navigation = NativeStackNavigationProp<AppStackParamList>;
 
@@ -111,6 +113,30 @@ const DriverHomeScreen: React.FC = () => {
 
   const { location: simLocation } = useBusLocations(user?.vehicleNo ?? DEMO_BUS_NO);
 
+  const currentBusLocation = React.useMemo(() => {
+    if (!trip) return null;
+    if (lastPoint) {
+      const heading = (trip.path && trip.path.length > 1)
+        ? bearingDegrees(trip.path[trip.path.length - 2], lastPoint)
+        : (simLocation?.heading ?? 45);
+      return {
+        busId: trip.busNo,
+        latitude: lastPoint.latitude,
+        longitude: lastPoint.longitude,
+        heading,
+        speedKmh: Math.round(lastPoint.speedKmh),
+        status: isDiverging ? ('delayed' as const) : ('on_route' as const),
+        etaMinutes: simLocation?.etaMinutes ?? 10,
+        nextStopName: upcomingPickup?.stopName ?? simLocation?.nextStopName ?? 'Hazratbal',
+        lastUpdated: lastPoint.timestamp,
+        schoolName: user?.schoolName,
+        driverName: user?.name,
+        complianceStatus: 'Compliant',
+      };
+    }
+    return simLocation;
+  }, [trip, lastPoint, simLocation, isDiverging, upcomingPickup, user]);
+
   // Set initial simulation route on mount based on driver's vehicle number
   useEffect(() => {
     if (user && !trip) {
@@ -119,12 +145,30 @@ const DriverHomeScreen: React.FC = () => {
     }
   }, [user, trip, setSimulationRoute]);
 
-  // Ensure Background DMS Guard is running during active trips
+  // Ensure Background DMS Guard is running ONLY during active trips for drivers
   useEffect(() => {
-    if (trip && !backgroundDmsService.isDmsActive()) {
-      backgroundDmsService.start();
+    if (user?.role === 'driver' && trip && trip.status === 'active') {
+      dmsEngine.tripId = trip.id;
+      dmsEngine.busId = trip.busNo;
+      dmsEngine.driverId = user.uid;
+      dmsEngine.setTrackingActive(true);
+      if (!backgroundDmsService.isDmsActive()) {
+        backgroundDmsService.start();
+      }
+    } else {
+      if (backgroundDmsService.isDmsActive()) {
+        backgroundDmsService.stop();
+      }
+      dmsEngine.setTrackingActive(false);
     }
-  }, [trip]);
+
+    return () => {
+      if (!trip) {
+        backgroundDmsService.stop();
+        dmsEngine.setTrackingActive(false);
+      }
+    };
+  }, [trip, user]);
 
   // Demo Simulation: Poll for cross-tab events from Parent App
   useEffect(() => {
@@ -180,6 +224,10 @@ const DriverHomeScreen: React.FC = () => {
   };
 
   const handleEnd = async (): Promise<void> => {
+    try {
+      await backgroundDmsService.stop();
+    } catch (e) {}
+    dmsEngine.setTrackingActive(false);
     const finished = await endTrip();
     if (finished) navigation.navigate('TripSummary', { trip: finished });
   };
@@ -199,7 +247,7 @@ const DriverHomeScreen: React.FC = () => {
 
   const [showCrashModal, setShowCrashModal] = useState(false);
   const [crashCountdown, setCrashCountdown] = useState(10);
-  const crashTimerRef = React.useRef<NodeJS.Timeout | null>(null);
+  const crashTimerRef = React.useRef<any>(null);
 
   const startCrashCountdown = () => {
     setCrashCountdown(10);
@@ -256,8 +304,33 @@ const DriverHomeScreen: React.FC = () => {
         showBrand
       />
 
-      {/* Driver Monitoring System (DMS) Heads-Up Display & Alert Bar */}
-      <DMSHeadsUpDisplay busId={user?.vehicleNo} driverId={user?.uid} />
+      {/* Driver Monitoring System (DMS) Heads-Up Display & Alert Bar ONLY during active trip */}
+      {trip && trip.status === 'active' ? (
+        <DMSHeadsUpDisplay busId={user?.vehicleNo} driverId={user?.uid} isTripActive={true} />
+      ) : (
+        <View
+          style={{
+            marginBottom: spacing.md,
+            paddingHorizontal: spacing.md,
+            paddingVertical: spacing.sm,
+            backgroundColor: colors.surface,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: colors.border,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.textTertiary }} />
+            <Text style={{ color: colors.textSecondary, fontSize: 13, fontFamily: 'Poppins-Medium' }}>
+              DMS Camera Standby · Activates on Trip Start
+            </Text>
+          </View>
+          <Badge label="STANDBY" tone="neutral" />
+        </View>
+      )}
 
       {!trip ? (
         <Animated.View entering={FadeInDown.duration(350)}>
@@ -268,13 +341,13 @@ const DriverHomeScreen: React.FC = () => {
       <Animated.View entering={FadeInDown.duration(400)}>
         <View style={{ height: 240, borderRadius: 12, overflow: 'hidden' }}>
           <BusMap
-            busLocation={trip ? simLocation || null : null}
+            busLocation={trip ? currentBusLocation || null : null}
             routeCoordinates={simulationRoutePath.map(p => ({ latitude: p.latitude, longitude: p.longitude }))}
           />
         </View>
-        {trip && simLocation && (
+        {trip && currentBusLocation && (
           <Text style={[typography.caption, { color: colors.textSecondary, marginTop: 8, textAlign: 'center' }]}>
-            Next: {simLocation.nextStopName} ({simLocation.etaMinutes} min)
+            Next: {currentBusLocation.nextStopName} ({currentBusLocation.etaMinutes} min) · {currentBusLocation.speedKmh} km/h
           </Text>
         )}
       </Animated.View>

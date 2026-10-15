@@ -44,7 +44,7 @@ export function extractHeadPose(matrix, landmarks = null, blendshapes = null) {
 
       // Pitch calculation from nose vertical position relative to forehead & chin
       const faceHeight = Math.abs(chin.y - forehead.y) || 0.001;
-      const midFaceY = forehead.y + faceHeight * 0.52;
+      const midFaceY = forehead.y + faceHeight * 0.60;
       const noseVertOffset = nose.y - midFaceY;
       const rawPitchRatio = noseVertOffset / (faceHeight * 0.45);
       pitch = Math.max(-75, Math.min(75, -rawPitchRatio * 65));
@@ -70,10 +70,10 @@ export function extractHeadPose(matrix, landmarks = null, blendshapes = null) {
     };
   }
 
-  const isLookingLeft = yaw > 20;
-  const isLookingRight = yaw < -20;
-  const isLookingDown = pitch < -15;
-  const isLookingUp = pitch > 20;
+  const isLookingLeft = yaw > 25;
+  const isLookingRight = yaw < -25;
+  const isLookingDown = pitch < -20;
+  const isLookingUp = pitch > 22;
   const isLookingAway = isLookingLeft || isLookingRight || isLookingDown || isLookingUp;
 
   let direction = "FORWARD";

@@ -35,6 +35,76 @@ function sampleLineLuminance(imageData, start, end, numSamples = 60) {
 }
 
 /**
+ * Computes interior luminance texture variance along the strap axis between two detected edges.
+ *
+ * Physical reasoning: genuine automotive seatbelt nylon webbing is manufactured with tight,
+ * uniform weaving that exhibits flat, low luminance variance along its longitudinal center axis.
+ * In contrast, patterned clothing (plaid, houndstooth, stripes, or printed logos) has high
+ * periodic texture variance across or along the band.
+ *
+ * @param {ImageData} imageData - RGBA frame buffer
+ * @param {number} frameWidth - Image width in px
+ * @param {Object} edgeLeft - Left edge pixel coordinate {x, y}
+ * @param {Object} edgeRight - Right edge pixel coordinate {x, y}
+ * @param {Object} transectCenter - Center point of the transect probe {x, y}
+ * @param {Object} transectNormal - Unit normal vector of the transect probe {x, y}
+ * @param {number} [numSamples=18] - Number of samples along the belt direction
+ * @returns {{ mean: number, stdDev: number, variance: number }}
+ */
+function computeInteriorTextureVariance(
+  imageData,
+  frameWidth,
+  edgeLeft,
+  edgeRight,
+  transectCenter,
+  transectNormal,
+  numSamples = 18
+) {
+  if (!imageData || !imageData.data || !edgeLeft || !edgeRight) {
+    return { mean: 0, stdDev: 0, variance: 0 };
+  }
+
+  const { data, width, height } = imageData;
+  const centerX = (edgeLeft.x + edgeRight.x) / 2;
+  const centerY = (edgeLeft.y + edgeRight.y) / 2;
+
+  // The belt direction unit vector is perpendicular to transectNormal
+  const beltDirX = transectNormal ? transectNormal.y : 0;
+  const beltDirY = transectNormal ? -transectNormal.x : 0;
+
+  const sampleSpacingPx = 3.0;
+  const halfSpan = ((numSamples - 1) / 2) * sampleSpacingPx;
+
+  let sum = 0;
+  let sumSq = 0;
+  let validCount = 0;
+
+  for (let s = 0; s < numSamples; s++) {
+    const offset = -halfSpan + s * sampleSpacingPx;
+    const px = Math.round(centerX + beltDirX * offset);
+    const py = Math.round(centerY + beltDirY * offset);
+
+    if (px >= 0 && px < width && py >= 0 && py < height) {
+      const idx = (py * width + px) * 4;
+      const lum = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+      sum += lum;
+      sumSq += lum * lum;
+      validCount++;
+    }
+  }
+
+  if (validCount < 4) {
+    return { mean: 0, stdDev: 0, variance: 0 };
+  }
+
+  const mean = sum / validCount;
+  const variance = Math.max(0, sumSq / validCount - mean * mean);
+  const stdDev = Math.sqrt(variance);
+
+  return { mean, stdDev, variance };
+}
+
+/**
  * Analyzes a 1D luminance profile across a full-torso slice for the signature of a seatbelt strap.
  *
  * @param {Float32Array} profile - 1D luminance samples
@@ -48,6 +118,10 @@ function analyzeTransectProfile(profile, options = {}) {
     minNoiseFloor = 4.0,
     probeLengthPx = 190,
     torsoWidthPx = 250,
+    imageData = null,
+    frameWidth = 640,
+    transectCenter = null,
+    transectNormal = null,
   } = options;
 
   const n = profile.length;
@@ -147,7 +221,11 @@ function analyzeTransectProfile(profile, options = {}) {
         const normWidth = candidateWidthPx / Math.max(torsoWidthPx, 100);
 
         // Torso-Normalized Width Scoring (Anti-Thin Filter)
-        const widthScore = Math.exp(-Math.pow(normWidth - 0.135, 2) / (2 * Math.pow(0.055, 2)));
+        // 3a — Close-Up Driver Gaussian Width Broadening
+        const closeUp = torsoWidthPx > 200;
+        const gaussMu = closeUp ? 0.155 : 0.135;
+        const gaussSigma = closeUp ? 0.065 : 0.055;
+        const widthScore = Math.exp(-Math.pow(normWidth - gaussMu, 2) / (2 * Math.pow(gaussSigma, 2)));
 
         // Expected Path Proximity Scoring
         const centerSample = (leftIdx + rightIdx) / 2;
@@ -177,18 +255,64 @@ function analyzeTransectProfile(profile, options = {}) {
         const absContrast = Math.abs(outerAvg - innerAvg);
         const relContrast = absContrast / Math.max(outerAvg, 16);
 
-        if (relContrast >= relativeEdgeThreshold * 0.60 || absContrast >= 6.0) {
+        if (relContrast >= relativeEdgeThreshold * 0.70 || absContrast >= 8.0) {
           const meanRelGrad = (leftPeak.relGrad + rightPeak.relGrad) / 2;
           const meanAbsGrad = (leftPeak.absGrad + rightPeak.absGrad) / 2;
 
           const contrastScore = Math.min(1.0, relContrast / 0.32);
           const edgeStrengthScore = Math.min(1.0, meanRelGrad / 0.30) * 0.65 + Math.min(1.0, meanAbsGrad / 25) * 0.35;
 
-          const candidateScore =
-            widthScore * 0.35 +
-            pathProximityScore * 0.30 +
-            contrastScore * 0.20 +
-            edgeStrengthScore * 0.15;
+          // Physical seatbelt ribbon MUST have real photometric edges and contrast against the shirt
+          const photometricEvidence = 0.55 * contrastScore + 0.45 * edgeStrengthScore;
+          if (photometricEvidence < 0.22 || (absContrast < 8.0 && relContrast < 0.10)) {
+            continue; // Pure uniform cloth texture noise, not a physical seatbelt
+          }
+
+          // Interior Texture Variance Gate (Improvement 2)
+          let S_uniformity = 0.85;
+          let interiorStats = { mean: innerAvg, stdDev: 8, variance: 64 };
+
+          if (imageData && transectCenter && transectNormal) {
+            const halfSamples = n > 1 ? (n - 1) / 2 : 1;
+            const leftOffsetPx = (leftIdx - halfSamples) * pxPerSample;
+            const rightOffsetPx = (rightIdx - halfSamples) * pxPerSample;
+
+            const edgeLeft = {
+              x: transectCenter.x + transectNormal.x * leftOffsetPx,
+              y: transectCenter.y + transectNormal.y * leftOffsetPx,
+            };
+            const edgeRight = {
+              x: transectCenter.x + transectNormal.x * rightOffsetPx,
+              y: transectCenter.y + transectNormal.y * rightOffsetPx,
+            };
+
+            interiorStats = computeInteriorTextureVariance(
+              imageData,
+              frameWidth || imageData.width,
+              edgeLeft,
+              edgeRight,
+              transectCenter,
+              transectNormal,
+              18
+            );
+
+            // Nylon webbing: stdDev < 12 (uniform, flat)
+            // Printed text/logos: stdDev 25-50
+            // Plaid/houndstooth: stdDev 18-35
+            S_uniformity = Math.max(0, Math.min(1.0, 1.0 - Math.max(0, (interiorStats.stdDev - 10) / 30)));
+          }
+
+          // Composite Candidate Score rebalanced with S_uniformity
+          let candidateScore = 0.30 * widthScore
+                             + 0.28 * pathProximityScore
+                             + 0.18 * contrastScore
+                             + 0.12 * edgeStrengthScore
+                             + 0.12 * S_uniformity;
+
+          // Hard gate: high-confidence geometry match but very high texture variance -> patterned fabric
+          if (interiorStats.stdDev > 38 && widthScore > 0.5 && pathProximityScore > 0.5) {
+            candidateScore = Math.min(candidateScore, 0.15);
+          }
 
           if (candidateScore > maxScore) {
             maxScore = candidateScore;
@@ -211,6 +335,8 @@ function analyzeTransectProfile(profile, options = {}) {
               score: candidateScore,
               widthScore,
               pathProximityScore,
+              uniformityScore: S_uniformity,
+              interiorStdDev: interiorStats.stdDev,
               centerOffset: centerSample - n / 2,
               polarityDescription: polarityDesc,
               leftPeak,
@@ -222,7 +348,7 @@ function analyzeTransectProfile(profile, options = {}) {
     }
   }
 
-  const hasStrap = bestPair !== null && bestPair.score >= 0.32;
+  const hasStrap = bestPair !== null && bestPair.score >= 0.42;
 
   return {
     hasStrap,
@@ -242,6 +368,8 @@ function analyzeTransectProfile(profile, options = {}) {
       estimatedBeltWidth: bestPair.widthPx,
       normWidthPct: bestPair.normWidth,
       relativeContrast: Math.round(bestPair.relContrast * 1000) / 10,
+      uniformityScore: Math.round(bestPair.uniformityScore * 100) / 100,
+      interiorStdDev: Math.round(bestPair.interiorStdDev * 10) / 10,
       score: Math.round(bestPair.score * 100) / 100,
     } : null,
   };
@@ -316,6 +444,10 @@ export function evaluateTransectMethod(imageData, path, options = {}) {
       minAbsEdgeThreshold: minEdgeThreshold,
       probeLengthPx: effectiveProbeLength,
       torsoWidthPx,
+      imageData,
+      frameWidth: imageData ? imageData.width : 640,
+      transectCenter: t.center,
+      transectNormal: t.normal,
     });
 
     totalValidEdgePairs += analysis.validPairsCount || 0;
@@ -376,8 +508,14 @@ export function evaluateTransectMethod(imageData, path, options = {}) {
     const slope = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
     const intercept = (sumX - slope * sumY) / n;
 
-    const expectedSlopeSign = (path.end.x - path.start.x) / (path.end.y - path.start.y);
-    validSlope = Math.sign(slope) === Math.sign(expectedSlopeSign) || Math.abs(slope) < 0.35;
+    const expectedSlope = (path.end.x - path.start.x) / (path.end.y - path.start.y);
+    // Real 3-point sash is diagonal across the torso:
+    // 1. Slope sign must match expected sash angle
+    // 2. Must not be nearly vertical (|slope| < 0.25) which matches vertical shirt plackets, zippers, or button rows
+    // 3. Slope magnitude must be plausible for diagonal torso geometry (0.25 <= |slope| <= 2.2)
+    const signMatches = Math.sign(slope) === Math.sign(expectedSlope);
+    const isDiagonal = Math.abs(slope) >= 0.15 && Math.abs(slope) <= 2.5;
+    validSlope = signMatches && isDiagonal;
 
     let totalErrorSq = 0;
     for (const p of candidateStrapPoints) {
@@ -386,17 +524,27 @@ export function evaluateTransectMethod(imageData, path, options = {}) {
     }
     const rmsError = Math.sqrt(totalErrorSq / n);
 
-    const ySpan = candidateStrapPoints[n - 1].y - candidateStrapPoints[0].y;
-    const pathHeight = Math.abs(path.end.y - path.start.y);
-    const spanRatio = pathHeight > 0 ? ySpan / pathHeight : 0;
+    // Vertical span covered by candidate points
+    const minY = candidateStrapPoints[0].y;
+    const maxY = candidateStrapPoints[n - 1].y;
+    const ySpan = maxY - minY;
 
-    if (validSlope && spanRatio >= 0.22) {
-      let baseLinearity = Math.max(0.0, Math.min(1.0, 1.4 - (rmsError / 28))) * Math.min(1.0, spanRatio / 0.45);
-      if (n === 3) baseLinearity *= 0.75;
+    // Calculate span relative to the VISIBLE portion of the path in the camera frame
+    const canvasH = imageData && imageData.height ? imageData.height : 480;
+    const visibleEndY = Math.min(path.end.y, canvasH - 5);
+    const visiblePathHeight = Math.max(80, visibleEndY - path.start.y);
+    const visibleSpanRatio = visiblePathHeight > 0 ? ySpan / visiblePathHeight : 0;
+
+    // Longitudinal spread: candidate points must have reasonable span across the visible torso
+    const minT = candidateStrapPoints[0].t;
+    const maxT = candidateStrapPoints[n - 1].t;
+    const tSpread = maxT - minT;
+
+    if (validSlope && visibleSpanRatio >= 0.20 && tSpread >= 0.14 && n >= 3) {
+      let baseLinearity = Math.max(0.0, Math.min(1.0, 1.4 - (rmsError / 28))) * Math.min(1.0, visibleSpanRatio / 0.45);
+      if (n === 3) baseLinearity *= 0.85;
       linearityScore = baseLinearity;
 
-      const minY = candidateStrapPoints[0].y;
-      const maxY = candidateStrapPoints[n - 1].y;
       observedStrapLine = {
         start: { x: slope * minY + intercept, y: minY },
         end: { x: slope * maxY + intercept, y: maxY },
@@ -409,10 +557,10 @@ export function evaluateTransectMethod(imageData, path, options = {}) {
   const avgContrastScore = matchedInCorridorCount > 0 ? totalContrastScore / matchedInCorridorCount : 0;
 
   const countFactor = matchedInCorridorCount >= 3
-    ? Math.min(1.0, matchedInCorridorCount / (numTransects * 0.45))
-    : (matchedInCorridorCount / 3) * 0.25;
+    ? Math.min(1.0, matchedInCorridorCount / (numTransects * 0.40))
+    : 0;
 
-  let confidence = (matchRatio * 0.45 + avgEdgeScore * 0.25 + avgContrastScore * 0.30) * linearityScore * countFactor;
+  let confidence = (matchRatio * 0.40 + avgEdgeScore * 0.30 + avgContrastScore * 0.30) * linearityScore * countFactor;
   confidence = Math.min(1.0, Math.max(0.0, confidence));
 
   const middleTransect = analyzedTransects[Math.floor(analyzedTransects.length / 2)] || null;
@@ -421,7 +569,7 @@ export function evaluateTransectMethod(imageData, path, options = {}) {
     methodId: "transect",
     methodName: "Method A: Full-Torso Multi-Transect Scanning",
     confidence: Math.round(confidence * 100) / 100,
-    isFastened: confidence >= 0.38 && matchedInCorridorCount >= 4,
+    isFastened: confidence >= 0.28 && matchedInCorridorCount >= 3 && observedStrapLine !== null,
     matchedTransects: matchedInCorridorCount,
     totalTransects: numTransects,
     matchRatio: Math.round(matchRatio * 100),
@@ -433,7 +581,7 @@ export function evaluateTransectMethod(imageData, path, options = {}) {
     strapCenters: candidateStrapPoints,
     corridor,
     observedStrapLine,
-    hasCorridorDetection: matchedInCorridorCount >= 4 && linearityScore >= 0.45,
+    hasCorridorDetection: matchedInCorridorCount >= 3 && linearityScore >= 0.28 && observedStrapLine !== null,
     validEdgePairsCount: totalValidEdgePairs,
     meanRelativeGradient: matchedInCorridorCount > 0 ? Math.round((sumRelGrad / matchedInCorridorCount) * 10) / 10 : 0,
     meanAbsoluteGradient: matchedInCorridorCount > 0 ? Math.round((sumAbsGrad / matchedInCorridorCount) * 10) / 10 : 0,

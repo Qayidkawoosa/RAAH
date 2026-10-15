@@ -155,7 +155,7 @@ export function createSafetyEventEngine(options = {}) {
       }
 
       // 5. Check Phone Use Distraction (CRITICAL) - Distinct Calling vs Texting vs Holding
-      if (phone?.isConfirmed && phone?.isHandAssociated) {
+      if (phone?.isConfirmed && (phone.mode === "CALLING" || phone?.isHandAssociated)) {
         let eventTypeObj = SAFETY_EVENT_TYPES.PHONE_USE_DETECTED;
         let eventMsg = `Driver actively holding mobile phone for ${(phone.activeDurationMs / 1000).toFixed(1)}s`;
 

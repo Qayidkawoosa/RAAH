@@ -101,6 +101,20 @@ export class DMSEngine {
   public currentLat: number = 34.0837;
   public currentLng: number = 74.7973;
 
+  /**
+   * DMS Safety Tracking Guard:
+   * Event tracking and alert dispatching are ONLY active when an authenticated
+   * driver is currently in an active trip session.
+   */
+  public isTrackingActive: boolean = false;
+
+  public setTrackingActive(active: boolean): void {
+    this.isTrackingActive = active;
+    if (!active) {
+      this.reset();
+    }
+  }
+
   private handsOnWheel: boolean = true;
   private handsCount: number = 2;
   private seatbeltFastened: boolean = false;
@@ -225,19 +239,35 @@ export class DMSEngine {
           if (this.handsOffStartTime === null) this.handsOffStartTime = now;
           const handsOffDuration = now - this.handsOffStartTime;
 
-          if (handsOffDuration >= 2500 && this.canTriggerAlert('hands_off', now)) {
+          // Stage 1: In-cockpit driver nudge at 3.0s
+          if (handsOffDuration >= 3000 && handsOffDuration < 5000 && !this.activeAlert) {
+            this.activeAlert = {
+              id: `dms_nudge_${now}`,
+              type: 'hands_off',
+              severity: 'warn',
+              title: 'Hands Off Steering Wheel',
+              message: 'Please keep both hands on the steering wheel.',
+              timestamp: new Date().toISOString(),
+            };
+          }
+
+          // Stage 2: Flag to fleet admin at 5.0s (Critical Safety Event)
+          if (handsOffDuration >= 5000 && this.canTriggerAlert('hands_off', now)) {
             this.emitEvent({
               type: 'hands_off',
               severity: 'critical',
               confidence: 0.90,
               source: 'driver_cam',
               title: 'Hands Off Steering Wheel',
-              message: 'Both hands off steering wheel for >2.5s.',
+              message: 'Both hands off steering wheel for >5s.',
               durationMs: handsOffDuration,
             });
           }
         } else {
           this.handsOffStartTime = null;
+          if (this.activeAlert?.type === 'hands_off' && this.activeAlert?.severity === 'warn') {
+            this.activeAlert = null;
+          }
         }
       }
 
@@ -256,6 +286,8 @@ export class DMSEngine {
     yawn: YawnState,
     now: number
   ): void {
+    if (!this.isTrackingActive) return;
+
     // Critical: Microsleep (eyes closed > 1.5s)
     if (drowsiness.isMicrosleeping && this.canTriggerAlert('drowsiness_crit', now)) {
       this.emitEvent({
@@ -333,6 +365,7 @@ export class DMSEngine {
     message: string;
     durationMs: number;
   }): void {
+    if (!this.isTrackingActive) return;
     if (this.canTriggerAlert(details.type, Date.now())) {
       this.emitEvent(details);
     }
@@ -352,6 +385,8 @@ export class DMSEngine {
     durationMs: number;
     thumbnail_ref?: string | null;
   }): void {
+    if (!this.isTrackingActive) return;
+
     const event: SafetyEvent = {
       event_id: `dms_ev_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       trip_id: this.tripId,
@@ -425,6 +460,7 @@ export class DMSEngine {
     headPose?: { yaw: number; pitch: number; roll: number; direction: string; isLookingAway?: boolean };
     attentionSummary?: string;
   }): void {
+    if (!this.isTrackingActive) return;
     const now = Date.now();
     if (metrics.isDriverPresent !== undefined) this.isDriverPresent = metrics.isDriverPresent;
     if (metrics.handsCount !== undefined) this.handsCount = metrics.handsCount;
@@ -482,19 +518,36 @@ export class DMSEngine {
       if (!this.handsOnWheel) {
         if (this.handsOffStartTime === null) this.handsOffStartTime = now;
         const duration = now - this.handsOffStartTime;
-        if (duration >= 2500 && this.canTriggerAlert('hands_off', now)) {
+
+        // Stage 1: In-cockpit driver nudge at 3.0s
+        if (duration >= 3000 && duration < 5000 && !this.activeAlert) {
+          this.activeAlert = {
+            id: `dms_nudge_${now}`,
+            type: 'hands_off',
+            severity: 'warn',
+            title: 'Hands Off Steering Wheel',
+            message: 'Please keep both hands on the steering wheel.',
+            timestamp: new Date().toISOString(),
+          };
+        }
+
+        // Stage 2: Flag to fleet admin at 5.0s (Critical Safety Event)
+        if (duration >= 5000 && this.canTriggerAlert('hands_off', now)) {
           this.emitEvent({
             type: 'hands_off',
             severity: 'critical',
             confidence: 0.92,
             source: 'driver_cam',
             title: 'Both Hands Off Steering Wheel',
-            message: 'Driver has both hands removed from steering wheel for >2.5s.',
+            message: 'Driver has both hands removed from steering wheel for >5s.',
             durationMs: duration,
           });
         }
       } else {
         this.handsOffStartTime = null;
+        if (this.activeAlert?.type === 'hands_off' && this.activeAlert?.severity === 'warn') {
+          this.activeAlert = null;
+        }
       }
     }
 

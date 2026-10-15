@@ -215,7 +215,7 @@ export function evaluateEdgeHoughMethod(imageData, torsoRoi, path, options = {})
   const maxNormWidth = 0.22;
   const idealNormWidth = 0.135;
 
-  const minPairLineVotes = Math.max(20, Math.round(expectedLineLength * 0.22));
+  const minPairLineVotes = Math.max(30, Math.round(expectedLineLength * 0.40));
 
   for (let i = 0; i < detectedPeaks.length; i++) {
     for (let j = i + 1; j < detectedPeaks.length; j++) {
@@ -284,6 +284,8 @@ export function evaluateEdgeHoughMethod(imageData, torsoRoi, path, options = {})
       let interiorUniformity = 0.5;
       if (interiorSamples >= 4) {
         const meanLum = interiorSum / interiorSamples;
+        // Anti-graphic/glare filter: only skip blown-out extreme glare saturation
+        if (meanLum > 235) continue;
         const variance = (interiorSumSq / interiorSamples) - (meanLum * meanLum);
         const stdDev = Math.sqrt(Math.max(0, variance));
         interiorUniformity = Math.max(0, Math.min(1.0, 1 - (stdDev - 12) / 28));
@@ -318,10 +320,10 @@ export function evaluateEdgeHoughMethod(imageData, torsoRoi, path, options = {})
   let confidence = 0;
   let isFastened = false;
 
-  if (bestBand && bestBand.bandScore >= 0.36 && validPairsCount > 0) {
+  if (bestBand && bestBand.bandScore >= 0.44 && validPairsCount > 0) {
     evidenceType = "DUAL_PARALLEL_BAND";
-    confidence = Math.min(0.92, Math.max(0.40, bestBand.bandScore * 1.10));
-    isFastened = confidence >= 0.40;
+    confidence = Math.min(0.92, bestBand.bandScore * 1.05);
+    isFastened = confidence >= 0.45;
   } else if (primaryPeak && primaryPeak.votes >= 20 && snr >= 1.8) {
     evidenceType = "SINGLE_EDGE_WEAK";
     confidence = Math.min(0.12, primaryLineCoherence * 0.12);
