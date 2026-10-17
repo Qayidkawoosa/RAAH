@@ -1,14 +1,26 @@
 {
   "name": "backend-raah",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "Safe School Bus Kashmir Backend",
+  "main": "dist/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "ts-node src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "test:auth": "ts-node scripts/testMiddleware.ts",
+    "test:api": "ts-node scripts/testAuthEndpoints.ts",
+    "test:trips": "ts-node scripts/testTripsAndDms.ts",
+    "test": "npm run test:auth && npm run test:api && npm run test:trips",
+    "seed": "ts-node prisma/seed.ts",
+    "postinstall": "prisma skills sync || exit 0"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "type": "commonjs",
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
@@ -29,6 +41,6 @@
     "@types/pg": "^8.23.1",
     "prisma": "^7.10.0",
     "ts-node": "^10.9.2",
-    "typescript": "^7.0.2"
+    "typescript": "^6.0.3"
   }
 }
