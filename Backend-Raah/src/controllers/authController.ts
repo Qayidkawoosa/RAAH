@@ -1,78 +1,17 @@
 import { Request, Response } from 'express';
+import { prisma } from '../config/db';
 import { hashPassword, comparePassword } from '../utils/password';
 import { generateToken } from '../utils/jwt';
-
-export interface UserRecord {
-  id: string;
-  email: string;
-  passwordHash: string;
-  name: string;
-  role: 'driver' | 'parent' | 'school' | 'admin' | 'rto';
-  phone?: string;
-  schoolId?: string;
-  createdAt: Date;
-}
-
-// In-memory user store (acts as data store until Person 1's Prisma migrations land)
-// Seeded with Kashmir Valley demo accounts for instant testing
-export const userDatabase: Map<string, UserRecord> = new Map();
-
-// Helper to pre-populate mock demo accounts
-export async function seedInitialAuthUsers(): Promise<void> {
-  if (userDatabase.size > 0) return;
-
-  const defaultPasswordHash = await hashPassword('KashmirSafe2026!');
-
-  const initialUsers: UserRecord[] = [
-    {
-      id: 'usr_driver_srinagar_01',
-      email: 'driver1@kashmirschool.edu',
-      passwordHash: defaultPasswordHash,
-      name: 'Bashir Ahmad (Bus 04 Driver)',
-      role: 'driver',
-      phone: '+91-9419012345',
-      schoolId: 'sch_dps_srinagar',
-      createdAt: new Date(),
-    },
-    {
-      id: 'usr_parent_rajbagh_02',
-      email: 'parent1@kashmirschool.edu',
-      passwordHash: defaultPasswordHash,
-      name: 'Zahoor Wani (Parent)',
-      role: 'parent',
-      phone: '+91-9419054321',
-      schoolId: 'sch_dps_srinagar',
-      createdAt: new Date(),
-    },
-    {
-      id: 'usr_admin_dps_03',
-      email: 'admin@dpskashmir.edu',
-      passwordHash: defaultPasswordHash,
-      name: 'DPS Srinagar Transport Manager',
-      role: 'school',
-      phone: '+91-9419099999',
-      schoolId: 'sch_dps_srinagar',
-      createdAt: new Date(),
-    },
-  ];
-
-  for (const user of initialUsers) {
-    userDatabase.set(user.email.toLowerCase(), user);
-  }
-}
-
-// Seed on module initialization
-seedInitialAuthUsers().catch(console.error);
+import { UserRole } from '@prisma/client';
 
 /**
  * POST /api/auth/register
- * Registers a new user with hashed password & returns JWT token
+ * Registers a new user account into PostgreSQL & returns JWT token
  */
 export async function register(req: Request, res: Response): Promise<void> {
   try {
-    const { email, password, name, role = 'parent', phone, schoolId } = req.body;
+    const { email, password, name, role = 'PARENT', phone, schoolId } = req.body;
 
-    // 1. Validation: required fields
     if (!email || !password || !name) {
       res.status(400).json({
         error: 'BadRequest',
@@ -81,7 +20,6 @@ export async function register(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // 2. Email format validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       res.status(400).json({
@@ -91,7 +29,6 @@ export async function register(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // 3. Password strength (minimum 6 characters)
     if (typeof password !== 'string' || password.length < 6) {
       res.status(400).json({
         error: 'BadRequest',
@@ -100,20 +37,14 @@ export async function register(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // 4. Role validation
-    const validRoles = ['driver', 'parent', 'school', 'admin', 'rto'];
-    if (!validRoles.includes(role.toLowerCase())) {
-      res.status(400).json({
-        error: 'BadRequest',
-        message: `Invalid role. Allowed roles are: ${validRoles.join(', ')}`,
-      });
-      return;
-    }
-
     const normalizedEmail = email.toLowerCase().trim();
 
-    // 5. Duplicate email check
-    if (userDatabase.has(normalizedEmail)) {
+    // 1. Check for existing user in PostgreSQL
+    const existingUser = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    if (existingUser) {
       res.status(409).json({
         error: 'Conflict',
         message: `An account with email '${email}' already exists`,
@@ -121,40 +52,44 @@ export async function register(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // 6. Hash password via Task 2.2 helper
+    // 2. Hash password
     const passwordHash = await hashPassword(password);
 
-    // 7. Create user record
-    const newUser: UserRecord = {
-      id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      email: normalizedEmail,
-      passwordHash,
-      name: name.trim(),
-      role: role.toLowerCase() as UserRecord['role'],
-      phone: phone?.trim(),
-      schoolId: schoolId?.trim(),
-      createdAt: new Date(),
-    };
+    // 3. Map string role to Prisma enum safely
+    const roleUpper = typeof role === 'string' ? role.toUpperCase() : 'PARENT';
+    const upperRole: UserRole =
+      roleUpper === 'SCHOOL' || roleUpper === 'ADMIN'
+        ? UserRole.SCHOOL_ADMIN
+        : (roleUpper as UserRole);
 
-    userDatabase.set(normalizedEmail, newUser);
+    // 4. Create user record in PostgreSQL
+    const newUser = await prisma.user.create({
+      data: {
+        email: normalizedEmail,
+        passwordHash,
+        name: name.trim(),
+        role: upperRole,
+        phone: phone?.trim(),
+        schoolId: schoolId?.trim(),
+      },
+    });
 
-    // 8. Generate JWT token via Task 2.2 helper
+    // 5. Generate JWT token
     const token = generateToken({
       userId: newUser.id,
-      role: newUser.role,
+      role: newUser.role.toLowerCase(),
       email: newUser.email,
     });
 
-    // 9. Respond with user info (excluding password hash)
     res.status(201).json({
       status: 'success',
-      message: 'User registered successfully',
+      message: 'User registered successfully in PostgreSQL',
       token,
       user: {
         id: newUser.id,
         email: newUser.email,
         name: newUser.name,
-        role: newUser.role,
+        role: newUser.role.toLowerCase(),
         phone: newUser.phone,
         schoolId: newUser.schoolId,
         createdAt: newUser.createdAt,
@@ -171,7 +106,7 @@ export async function register(req: Request, res: Response): Promise<void> {
 
 /**
  * POST /api/auth/login
- * Validates credentials & returns JWT token with user profile
+ * Validates credentials against PostgreSQL & returns JWT token
  */
 export async function login(req: Request, res: Response): Promise<void> {
   try {
@@ -186,9 +121,13 @@ export async function login(req: Request, res: Response): Promise<void> {
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    const user = userDatabase.get(normalizedEmail);
 
-    // Prevent timing enumeration by rejecting unknown users
+    // 1. Query REAL PostgreSQL Database
+    const user = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      include: { school: true, assignedBus: true },
+    });
+
     if (!user) {
       res.status(401).json({
         error: 'Unauthorized',
@@ -197,7 +136,7 @@ export async function login(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // Verify password hash
+    // 2. Verify hashed password
     const isMatch = await comparePassword(password, user.passwordHash);
     if (!isMatch) {
       res.status(401).json({
@@ -207,25 +146,25 @@ export async function login(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // Issue JWT token
+    // 3. Generate JWT token
     const token = generateToken({
       userId: user.id,
-      role: user.role,
+      role: user.role.toLowerCase(),
       email: user.email,
     });
 
     res.status(200).json({
       status: 'success',
-      message: 'Logged in successfully',
+      message: 'Logged in successfully via PostgreSQL!',
       token,
       user: {
         id: user.id,
         email: user.email,
         name: user.name,
-        role: user.role,
+        role: user.role.toLowerCase(),
         phone: user.phone,
-        schoolId: user.schoolId,
-        createdAt: user.createdAt,
+        school: user.school?.name,
+        assignedBus: user.assignedBusNo,
       },
     });
   } catch (error: any) {
@@ -239,7 +178,7 @@ export async function login(req: Request, res: Response): Promise<void> {
 
 /**
  * GET /api/auth/me
- * Protected profile route returning the authenticated user
+ * Protected profile route returning authenticated user from PostgreSQL
  */
 export async function getMe(req: Request, res: Response): Promise<void> {
   try {
@@ -251,35 +190,31 @@ export async function getMe(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // Find profile in database by email or userId
-    let userProfile = req.user.email ? userDatabase.get(req.user.email.toLowerCase()) : undefined;
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.userId },
+      include: { school: true, assignedBus: true },
+    });
 
-    if (!userProfile) {
-      for (const u of userDatabase.values()) {
-        if (u.id === req.user.userId) {
-          userProfile = u;
-          break;
-        }
-      }
+    if (!user) {
+      res.status(404).json({
+        error: 'NotFound',
+        message: 'User profile not found in database',
+      });
+      return;
     }
 
     res.status(200).json({
       status: 'success',
-      user: userProfile
-        ? {
-            id: userProfile.id,
-            email: userProfile.email,
-            name: userProfile.name,
-            role: userProfile.role,
-            phone: userProfile.phone,
-            schoolId: userProfile.schoolId,
-            createdAt: userProfile.createdAt,
-          }
-        : {
-            id: req.user.userId,
-            role: req.user.role,
-            email: req.user.email,
-          },
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role.toLowerCase(),
+        phone: user.phone,
+        school: user.school?.name,
+        assignedBus: user.assignedBusNo,
+        createdAt: user.createdAt,
+      },
     });
   } catch (error: any) {
     console.error('GetMe error:', error);

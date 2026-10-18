@@ -1,8 +1,11 @@
+import http from 'http';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { authenticateToken, requireRoles } from './middleware/auth';
 import { generateToken } from './utils/jwt';
+import { prisma } from './config/db';
+import { setupTelemetrySockets } from './sockets/telemetry';
 import authRoutes from './routes/authRoutes';
 import tripRoutes from './routes/tripRoutes';
 import fleetRoutes from './routes/fleetRoutes';
@@ -98,11 +101,24 @@ app.get('/api/test/driver-only', authenticateToken, requireRoles('driver'), (req
   });
 });
 
-// Start Express Server
+// Create Node HTTP Server and attach Socket.io
+const server = http.createServer(app);
+export const io = setupTelemetrySockets(server);
+
+// Start Express + Socket Server & Verify Database Connection
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
+  server.listen(PORT, async () => {
     console.log(`🚀 Raasta Kashmir Backend running on port ${PORT}`);
     console.log(`🩺 Health check endpoint: http://localhost:${PORT}/api/health`);
+    console.log(`📡 Real-Time Telemetry Socket.io server active!`);
+    // Verify PostgreSQL connection
+    try {
+      await prisma.$connect();
+      const schoolCount = await prisma.school.count();
+      console.log(`✅ Connected to PostgreSQL Database! (${schoolCount} Schools online)`);
+    } catch (error) {
+      console.error('❌ Failed to connect to PostgreSQL:', error);
+    }
   });
 }
 
