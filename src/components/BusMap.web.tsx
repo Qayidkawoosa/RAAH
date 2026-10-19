@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, Text } from 'react-native';
 import { GoogleMap, LoadScript, MarkerF, PolylineF } from '@react-google-maps/api';
 import { BusMapProps } from './BusMap';
 import { DEMO_STOPS } from '../constants/demoRoute';
+import { BusLocation } from '../hooks/useBusLocations';
 
 const containerStyle = {
   width: '100%',
@@ -11,17 +12,201 @@ const containerStyle = {
 };
 
 const darkMapStyle = [
-  { elementType: "geometry", stylers: [{ color: "#242f3e" }] },
-  { elementType: "labels.text.stroke", stylers: [{ color: "#242f3e" }] },
-  { elementType: "labels.text.fill", stylers: [{ color: "#746855" }] },
-  { featureType: "water", elementType: "geometry", stylers: [{ color: "#17263c" }] },
+  { elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#242f3e' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#746855' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
 ];
 
+const LEAFLET_CSS_URL = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+const LEAFLET_JS_URL = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+
 /**
- * High-performance vector map for Web testing and deterministic offline demos.
- * Renders Dal Lake, Srinagar roads, stops, and real-time moving buses with zero API keys.
+ * Hook to dynamically load Leaflet CSS & JS into the DOM without external package dependencies.
  */
-const OfflineVectorWebMap: React.FC<BusMapProps> = ({
+function useLeafletLoader() {
+  const [loaded, setLoaded] = useState(() => {
+    return typeof window !== 'undefined' && !!(window as any).L;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    if ((window as any).L) {
+      setLoaded(true);
+      return;
+    }
+
+    // Inject Leaflet CSS
+    if (!document.getElementById('leaflet-css')) {
+      const link = document.createElement('link');
+      link.id = 'leaflet-css';
+      link.rel = 'stylesheet';
+      link.href = LEAFLET_CSS_URL;
+      document.head.appendChild(link);
+    }
+
+    // Inject custom styling for bus badges, dark mode controls, and tooltips
+    if (!document.getElementById('leaflet-custom-styles')) {
+      const style = document.createElement('style');
+      style.id = 'leaflet-custom-styles';
+      style.innerHTML = `
+        .leaflet-bus-icon {
+          background: transparent !important;
+          border: none !important;
+        }
+        .leaflet-stop-tooltip {
+          background-color: rgba(15, 23, 42, 0.92) !important;
+          color: #F8FAFC !important;
+          border: 1px solid rgba(255, 255, 255, 0.15) !important;
+          font-size: 10px !important;
+          font-weight: 600 !important;
+          padding: 3px 7px !important;
+          border-radius: 6px !important;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+        }
+        .leaflet-stop-tooltip::before {
+          border-top-color: rgba(15, 23, 42, 0.92) !important;
+        }
+        .leaflet-bar {
+          border: 1px solid rgba(255, 255, 255, 0.15) !important;
+          border-radius: 8px !important;
+          overflow: hidden !important;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+        }
+        .leaflet-bar a {
+          background-color: rgba(15, 23, 42, 0.9) !important;
+          color: #F8FAFC !important;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+        }
+        .leaflet-bar a:hover {
+          background-color: rgba(30, 41, 59, 0.95) !important;
+          color: #38BDF8 !important;
+        }
+        .leaflet-control-attribution {
+          background: rgba(15, 23, 42, 0.75) !important;
+          color: #94A3B8 !important;
+          font-size: 9px !important;
+          border-radius: 4px !important;
+          padding: 2px 6px !important;
+        }
+        .leaflet-control-attribution a {
+          color: #60A5FA !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    // Inject Leaflet JS
+    let script = document.getElementById('leaflet-js') as HTMLScriptElement | null;
+    if (!script) {
+      script = document.createElement('script');
+      script.id = 'leaflet-js';
+      script.src = LEAFLET_JS_URL;
+      script.async = true;
+      document.head.appendChild(script);
+    }
+
+    const onLoad = () => setLoaded(true);
+    script.addEventListener('load', onLoad);
+
+    const interval = setInterval(() => {
+      if ((window as any).L) {
+        setLoaded(true);
+        clearInterval(interval);
+      }
+    }, 100);
+
+    return () => {
+      script?.removeEventListener('load', onLoad);
+      clearInterval(interval);
+    };
+  }, []);
+
+  return loaded;
+}
+
+/**
+ * Creates a custom HTML badge divIcon for Leaflet with glowing status border and bus icon.
+ */
+function createBusDivIcon(
+  L: any,
+  bus: BusLocation,
+  getPinColor?: (bus: BusLocation) => string
+) {
+  const color = getPinColor
+    ? getPinColor(bus)
+    : bus.status === 'sos'
+    ? '#EF4444'
+    : bus.status === 'delayed'
+    ? '#F59E0B'
+    : '#10B981';
+
+  const heading = bus.heading || 0;
+  const speedOrTag =
+    bus.speedKmh !== undefined && bus.speedKmh > 0
+      ? `${bus.speedKmh} km/h`
+      : bus.status === 'sos'
+      ? 'SOS'
+      : bus.status === 'delayed'
+      ? 'DELAYED'
+      : bus.busId.split('-').slice(-2).join('-');
+
+  const html = `
+    <div style="
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(15, 23, 42, 0.92);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      padding: 3px 8px 3px 5px;
+      border-radius: 9999px;
+      border: 2px solid ${color};
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5), 0 0 10px ${color}88;
+      cursor: pointer;
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+      user-select: none;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      transition: transform 0.15s ease-out;
+    ">
+      <div style="
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: ${color};
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        transform: rotate(${heading}deg);
+        box-shadow: 0 0 8px ${color}aa;
+      ">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="white">
+          <path d="M4 16c0 .88.39 1.67 1 2.22V20c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h8v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1.78c.61-.55 1-1.34 1-2.22V6c0-3.5-3.58-4-8-4s-8 .5-8 4v10zm3.5 1c-.83 0-1.5-.67-1.5-1.5S6.67 14 7.5 14s1.5.67 1.5 1.5S8.33 17 7.5 17zm9 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm1.5-6H6V6h12v5z"/>
+        </svg>
+      </div>
+      <div style="display: flex; flex-direction: column; text-align: left; line-height: 1.1;">
+        <span style="font-size: 11px; font-weight: 700; color: #F8FAFC; letter-spacing: 0.2px;">${bus.busId}</span>
+        <span style="font-size: 8.5px; font-weight: 600; color: ${color}; text-transform: uppercase;">${speedOrTag}</span>
+      </div>
+    </div>
+  `;
+
+  return L.divIcon({
+    className: 'leaflet-bus-icon',
+    html,
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+  });
+}
+
+/**
+ * Free OpenStreetMap interactive web map via Leaflet.
+ * Rendered when no Google Maps API key is configured.
+ */
+const LeafletWebMap: React.FC<BusMapProps> = ({
   busLocation,
   busLocations = [],
   routeCoordinates,
@@ -29,282 +214,223 @@ const OfflineVectorWebMap: React.FC<BusMapProps> = ({
   onBusPress,
   getPinColor,
 }) => {
+  const leafletLoaded = useLeafletLoader();
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const markersRef = useRef<Map<string, { marker: any; bus: BusLocation }>>(new Map());
+  const polylinesRef = useRef<any[]>([]);
+  const stopsRef = useRef<any[]>([]);
+  const onBusPressRef = useRef(onBusPress);
+  onBusPressRef.current = onBusPress;
+
   const allBuses = useMemo(() => {
     return busLocation ? [busLocation, ...busLocations] : busLocations;
   }, [busLocation, busLocations]);
 
   const allRoutes = useMemo(() => {
-    return routeCoordinates ? [routeCoordinates, ...routeCoordinatesList] : routeCoordinatesList;
+    return routeCoordinates
+      ? [routeCoordinates, ...routeCoordinatesList]
+      : routeCoordinatesList;
   }, [routeCoordinates, routeCoordinatesList]);
-
-  // Compute Srinagar bounding box dynamically from route coordinates
-  const bounds = useMemo(() => {
-    let minLat = 34.06;
-    let maxLat = 34.15;
-    let minLng = 74.78;
-    let maxLng = 74.88;
-
-    const allPts = allRoutes.flat();
-    if (allPts.length > 0) {
-      minLat = Math.min(...allPts.map((p) => p.latitude));
-      maxLat = Math.max(...allPts.map((p) => p.latitude));
-      minLng = Math.min(...allPts.map((p) => p.longitude));
-      maxLng = Math.max(...allPts.map((p) => p.longitude));
-    }
-
-    const padLat = (maxLat - minLat) * 0.15 || 0.01;
-    const padLng = (maxLng - minLng) * 0.15 || 0.01;
-
-    return {
-      minLat: minLat - padLat,
-      maxLat: maxLat + padLat,
-      minLng: minLng - padLng,
-      maxLng: maxLng + padLng,
-    };
-  }, [allRoutes]);
-
-  const WIDTH = 600;
-  const HEIGHT = 320;
-
-  // Project geographic coordinates (lat, lng) to SVG pixel space
-  const project = (lat: number, lng: number) => {
-    const x = ((lng - bounds.minLng) / (bounds.maxLng - bounds.minLng)) * WIDTH;
-    const y = ((bounds.maxLat - lat) / (bounds.maxLat - bounds.minLat)) * HEIGHT;
-    return {
-      x: Math.max(10, Math.min(WIDTH - 10, x)),
-      y: Math.max(10, Math.min(HEIGHT - 10, y)),
-    };
-  };
 
   const primaryBus = allBuses[0] || null;
 
+  // Initialize Leaflet map centered on Srinagar (34.0837, 74.7973)
+  useEffect(() => {
+    if (!leafletLoaded || !mapContainerRef.current || mapInstanceRef.current || !(window as any).L) {
+      return;
+    }
+
+    const L = (window as any).L;
+
+    const map = L.map(mapContainerRef.current, {
+      center: [34.0837, 74.7973],
+      zoom: 13,
+      zoomControl: false,
+    });
+
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+    // OpenStreetMap Tile Layer
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+    }).addTo(map);
+
+    mapInstanceRef.current = map;
+
+    // Handle container dimension updates dynamically
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && mapContainerRef.current) {
+      ro = new ResizeObserver(() => {
+        map.invalidateSize();
+      });
+      ro.observe(mapContainerRef.current);
+    }
+
+    const timeout = setTimeout(() => {
+      map.invalidateSize();
+    }, 200);
+
+    return () => {
+      clearTimeout(timeout);
+      ro?.disconnect();
+      markersRef.current.forEach(({ marker }) => marker.remove());
+      markersRef.current.clear();
+      polylinesRef.current.forEach((p) => p.remove());
+      polylinesRef.current = [];
+      stopsRef.current.forEach((s) => s.remove());
+      stopsRef.current = [];
+      map.remove();
+      mapInstanceRef.current = null;
+    };
+  }, [leafletLoaded]);
+
+  // Render demo bus stops with tooltips
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !(window as any).L) return;
+    const L = (window as any).L;
+
+    stopsRef.current.forEach((s) => s.remove());
+    stopsRef.current = [];
+
+    DEMO_STOPS.forEach((stop) => {
+      const stopMarker = L.circleMarker([stop.location.latitude, stop.location.longitude], {
+        radius: 4.5,
+        color: '#FFFFFF',
+        weight: 1.5,
+        fillColor: '#3B82F6',
+        fillOpacity: 0.9,
+      }).addTo(map);
+
+      stopMarker.bindTooltip(stop.name, {
+        direction: 'top',
+        offset: [0, -6],
+        className: 'leaflet-stop-tooltip',
+      });
+
+      stopsRef.current.push(stopMarker);
+    });
+  }, [leafletLoaded]);
+
+  // Draw active routes using L.polyline
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !(window as any).L) return;
+    const L = (window as any).L;
+
+    polylinesRef.current.forEach((p) => p.remove());
+    polylinesRef.current = [];
+
+    allRoutes.forEach((route) => {
+      if (route && route.length > 0) {
+        const latLngs = route.map((pt) => [pt.latitude, pt.longitude] as [number, number]);
+
+        const glowLine = L.polyline(latLngs, {
+          color: '#8B5CF6',
+          weight: 7,
+          opacity: 0.35,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }).addTo(map);
+
+        const mainLine = L.polyline(latLngs, {
+          color: '#A78BFA',
+          weight: 3.5,
+          opacity: 0.9,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }).addTo(map);
+
+        polylinesRef.current.push(glowLine, mainLine);
+      }
+    });
+  }, [allRoutes, leafletLoaded]);
+
+  // Render bus pins with custom HTML badges and update coordinates dynamically using marker.setLatLng()
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !(window as any).L) return;
+    const L = (window as any).L;
+
+    const currentBusIds = new Set(allBuses.map((b) => b.busId));
+
+    // Clean up markers no longer active
+    markersRef.current.forEach(({ marker }, id) => {
+      if (!currentBusIds.has(id)) {
+        marker.remove();
+        markersRef.current.delete(id);
+      }
+    });
+
+    // Update or create markers
+    allBuses.forEach((bus) => {
+      const existing = markersRef.current.get(bus.busId);
+      if (existing) {
+        existing.marker.setLatLng([bus.latitude, bus.longitude]);
+        if (
+          existing.bus.status !== bus.status ||
+          existing.bus.speedKmh !== bus.speedKmh ||
+          existing.bus.heading !== bus.heading
+        ) {
+          existing.marker.setIcon(createBusDivIcon(L, bus, getPinColor));
+        }
+        existing.bus = bus;
+      } else {
+        const marker = L.marker([bus.latitude, bus.longitude], {
+          icon: createBusDivIcon(L, bus, getPinColor),
+          zIndexOffset: 1000,
+        }).addTo(map);
+
+        marker.on('click', () => {
+          const current = markersRef.current.get(bus.busId);
+          onBusPressRef.current?.(current ? current.bus : bus);
+        });
+
+        markersRef.current.set(bus.busId, { marker, bus });
+      }
+    });
+  }, [allBuses, getPinColor, leafletLoaded]);
+
+  // Smoothly center when focused on a single bus
+  const focusedBusIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !busLocation) return;
+    if (focusedBusIdRef.current !== busLocation.busId) {
+      focusedBusIdRef.current = busLocation.busId;
+      map.panTo([busLocation.latitude, busLocation.longitude], { animate: true });
+    }
+  }, [busLocation]);
+
   return (
     <View style={styles.vectorContainer}>
-      <svg
-        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        style={{ width: '100%', height: '100%', display: 'block' }}
-      >
-        <defs>
-          <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#0B132B" />
-            <stop offset="100%" stopColor="#1C2541" />
-          </linearGradient>
+      <div
+        ref={mapContainerRef}
+        style={{
+          width: '100%',
+          height: '100%',
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          backgroundColor: '#0B132B',
+        }}
+      />
 
-          <linearGradient id="waterGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#1F3A60" stopOpacity="0.85" />
-            <stop offset="100%" stopColor="#14213D" stopOpacity="0.95" />
-          </linearGradient>
-
-          <filter id="busGlow" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur" />
-            <feMerge>
-              <feMergeNode in="blur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-
-          <filter id="routeGlow" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur in="SourceAlpha" stdDeviation="3" result="blur" />
-            <feFlood floodColor="#8B5CF6" floodOpacity="0.6" result="flood" />
-            <feComposite in="flood" in2="blur" operator="in" result="glow" />
-            <feMerge>
-              <feMergeNode in="glow" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-
-        {/* Map Background */}
-        <rect x="0" y="0" width={WIDTH} height={HEIGHT} fill="url(#bgGrad)" />
-
-        {/* Stylized Grid Lines */}
-        {Array.from({ length: 7 }).map((_, i) => (
-          <line
-            key={`grid-x-${i}`}
-            x1={(i + 1) * (WIDTH / 8)}
-            y1="0"
-            x2={(i + 1) * (WIDTH / 8)}
-            y2={HEIGHT}
-            stroke="#ffffff"
-            strokeOpacity="0.04"
-            strokeDasharray="4 4"
-          />
-        ))}
-        {Array.from({ length: 4 }).map((_, i) => (
-          <line
-            key={`grid-y-${i}`}
-            x1="0"
-            y1={(i + 1) * (HEIGHT / 5)}
-            x2={WIDTH}
-            y2={(i + 1) * (HEIGHT / 5)}
-            stroke="#ffffff"
-            strokeOpacity="0.04"
-            strokeDasharray="4 4"
-          />
-        ))}
-
-        {/* Stylized Dal Lake Water Silhouette */}
-        <path
-          d={`M ${WIDTH * 0.45} ${HEIGHT * 0.15} Q ${WIDTH * 0.65} ${HEIGHT * 0.18} ${WIDTH * 0.72} ${HEIGHT * 0.42} Q ${WIDTH * 0.75} ${HEIGHT * 0.68} ${WIDTH * 0.58} ${HEIGHT * 0.75} Q ${WIDTH * 0.42} ${HEIGHT * 0.65} ${WIDTH * 0.40} ${HEIGHT * 0.45} Z`}
-          fill="url(#waterGrad)"
-          stroke="#3A86FF"
-          strokeWidth="1.5"
-          strokeOpacity="0.4"
-        />
-        <text
-          x={WIDTH * 0.56}
-          y={HEIGHT * 0.45}
-          fill="#60A5FA"
-          fontSize="11"
-          fontWeight="600"
-          letterSpacing="2"
-          textAnchor="middle"
-          opacity="0.6"
-          fontFamily="system-ui, sans-serif"
-        >
-          DAL LAKE · دال جھیل
-        </text>
-
-        {/* Route Polylines */}
-        {allRoutes.map((route, rIdx) => {
-          if (!route || route.length === 0) return null;
-          const pathD = route
-            .map((pt, pIdx) => {
-              const { x, y } = project(pt.latitude, pt.longitude);
-              return `${pIdx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
-            })
-            .join(' ');
-
-          return (
-            <g key={`route-group-${rIdx}`}>
-              {/* Outer Glow */}
-              <path
-                d={pathD}
-                fill="none"
-                stroke="#8B5CF6"
-                strokeWidth="6"
-                strokeOpacity="0.3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              {/* Main Route Line */}
-              <path
-                d={pathD}
-                fill="none"
-                stroke="#A78BFA"
-                strokeWidth="3.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                filter="url(#routeGlow)"
-              />
-            </g>
-          );
-        })}
-
-        {/* Key Bus Stops */}
-        {DEMO_STOPS.map((stop, idx) => {
-          const { x, y } = project(stop.location.latitude, stop.location.longitude);
-          return (
-            <g key={`stop-${idx}`}>
-              <circle cx={x} cy={y} r="5" fill="#3B82F6" stroke="#ffffff" strokeWidth="1.5" />
-              <text
-                x={x + 7}
-                y={y + 3}
-                fill="#E2E8F0"
-                fontSize="9"
-                fontWeight="500"
-                fontFamily="system-ui, sans-serif"
-                opacity="0.85"
-              >
-                {stop.name}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* Moving Bus Markers */}
-        {allBuses.map((bus) => {
-          const { x, y } = project(bus.latitude, bus.longitude);
-          const color = getPinColor
-            ? getPinColor(bus)
-            : bus.status === 'sos'
-            ? '#EF4444'
-            : bus.status === 'delayed'
-            ? '#F59E0B'
-            : '#10B981';
-
-          return (
-            <g
-              key={bus.busId}
-              transform={`translate(${x}, ${y})`}
-              style={{ cursor: 'pointer', transition: 'transform 0.4s ease-out' }}
-              onClick={() => onBusPress?.(bus)}
-            >
-              {/* Pulsing Radar Ring */}
-              <circle cx="0" cy="0" r="16" fill={color} fillOpacity="0.2">
-                <animate
-                  attributeName="r"
-                  values="10;22;10"
-                  dur="2s"
-                  repeatCount="indefinite"
-                />
-                <animate
-                  attributeName="fill-opacity"
-                  values="0.35;0.05;0.35"
-                  dur="2s"
-                  repeatCount="indefinite"
-                />
-              </circle>
-
-              {/* Direction Indicator */}
-              <g transform={`rotate(${bus.heading || 0})`}>
-                <polygon
-                  points="0,-14 9,10 0,6 -9,10"
-                  fill={color}
-                  stroke="#FFFFFF"
-                  strokeWidth="1.5"
-                  filter="url(#busGlow)"
-                />
-              </g>
-
-              {/* Bus Center Dot */}
-              <circle cx="0" cy="0" r="4.5" fill="#FFFFFF" />
-
-              {/* Speed / Bus ID Tag */}
-              <g transform="translate(14, -8)">
-                <rect
-                  x="0"
-                  y="-10"
-                  width="72"
-                  height="18"
-                  rx="4"
-                  fill="#0F172A"
-                  fillOpacity="0.88"
-                  stroke={color}
-                  strokeWidth="1"
-                />
-                <text
-                  x="36"
-                  y="2"
-                  fill="#F8FAFC"
-                  fontSize="8.5"
-                  fontWeight="bold"
-                  fontFamily="system-ui, sans-serif"
-                  textAnchor="middle"
-                >
-                  {bus.speedKmh ? `${bus.speedKmh} km/h` : bus.busId.split('-').slice(-2).join('-')}
-                </text>
-              </g>
-            </g>
-          );
-        })}
-      </svg>
+      {!leafletLoaded && (
+        <View style={styles.loadingOverlay}>
+          <View style={styles.liveDot} />
+          <Text style={styles.hudText}>LOADING OPENSTREETMAP...</Text>
+        </View>
+      )}
 
       {/* Live HUD Overlay */}
       <View style={styles.hudBadge}>
         <View style={styles.liveDot} />
         <Text style={styles.hudText}>
-          {primaryBus ? `${primaryBus.busId} · LIVE GPS` : 'OFFLINE GPS SIMULATION'}
+          {primaryBus ? `${primaryBus.busId} · LIVE GPS` : 'LIVE GPS · OPENSTREETMAP'}
         </Text>
       </View>
 
@@ -323,11 +449,15 @@ export const BusMap: React.FC<BusMapProps> = (props) => {
   const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
   // If a valid Google Maps API Key is configured, use Google Maps.
-  // Otherwise, use the built-in deterministic Offline Vector Web Map.
+  // Otherwise, use Leaflet OpenStreetMap as the default web map.
   if (apiKey && apiKey.trim().length > 10) {
-    const mapRef = useRef<google.maps.Map | null>(null);
-    const allBuses = props.busLocation ? [props.busLocation, ...(props.busLocations || [])] : (props.busLocations || []);
-    const allRoutes = props.routeCoordinates ? [props.routeCoordinates, ...(props.routeCoordinatesList || [])] : (props.routeCoordinatesList || []);
+    const mapRef = useRef<any>(null);
+    const allBuses = props.busLocation
+      ? [props.busLocation, ...(props.busLocations || [])]
+      : props.busLocations || [];
+    const allRoutes = props.routeCoordinates
+      ? [props.routeCoordinates, ...(props.routeCoordinatesList || [])]
+      : props.routeCoordinatesList || [];
 
     const center = useMemo(() => {
       return allBuses.length > 0
@@ -343,7 +473,9 @@ export const BusMap: React.FC<BusMapProps> = (props) => {
             center={center}
             zoom={14}
             options={{ styles: darkMapStyle, disableDefaultUI: true }}
-            onLoad={(map) => { mapRef.current = map; }}
+            onLoad={(map) => {
+              mapRef.current = map;
+            }}
           >
             {allRoutes.map((route, i) => (
               <PolylineF
@@ -366,20 +498,29 @@ export const BusMap: React.FC<BusMapProps> = (props) => {
     );
   }
 
-  return <OfflineVectorWebMap {...props} />;
+  return <LeafletWebMap {...props} />;
 };
 
 const styles = StyleSheet.create({
   container: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: 12,
     overflow: 'hidden',
   },
   vectorContainer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: 12,
     overflow: 'hidden',
     backgroundColor: '#0B132B',
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: '#0B132B',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    zIndex: 999,
   },
   hudBadge: {
     position: 'absolute',
@@ -394,6 +535,8 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
+    zIndex: 1001,
+    pointerEvents: 'none',
   },
   liveDot: {
     width: 6,
@@ -417,6 +560,8 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.08)',
+    zIndex: 1001,
+    pointerEvents: 'none',
   },
   coordsText: {
     color: '#94A3B8',
