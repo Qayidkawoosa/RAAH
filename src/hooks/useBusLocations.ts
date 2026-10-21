@@ -34,6 +34,36 @@ export function useBusLocations(busId?: string) {
     let isMounted = true;
 
     const setupSubscriptions = async () => {
+      // 1. Global Socket.IO listener for any bus:state on the server
+      const socket = (realtimeService as any).ensureSocket?.();
+      const handleBusState = (state: BusLiveState) => {
+        if (!state?.busNo || !state.location) return;
+
+        setLocations((prev) => ({
+          ...prev,
+          [state.busNo]: {
+            busId: state.busNo,
+            latitude: state.location.latitude,
+            longitude: state.location.longitude,
+            heading: state.heading || 0,
+            speedKmh: state.speedKmh || 0,
+            status: (state.status as BusStatus) || 'on_route',
+            lastUpdated: Date.now(),
+            driverName: state.driverName || prev[state.busNo]?.driverName || 'Driver',
+            etaMinutes: state.etaMinutes ?? prev[state.busNo]?.etaMinutes ?? 0,
+            nextStopName: state.nextStop || prev[state.busNo]?.nextStopName || '',
+            schoolName: prev[state.busNo]?.schoolName || 'Kashmir Valley School',
+            complianceStatus: prev[state.busNo]?.complianceStatus || 'Compliant',
+          },
+        }));
+      };
+
+      if (socket) {
+        socket.on('bus:state', handleBusState);
+        unsubscribes.push(() => socket.off('bus:state', handleBusState));
+      }
+
+      // 2. Specific per-bus subscriptions for rooms
       const defaultBuses = ['BUS-04', 'BUS-07', 'BUS-12', 'JK-01-A-1234'];
       const busSet = new Set<string>(defaultBuses);
 
@@ -54,29 +84,10 @@ export function useBusLocations(busId?: string) {
 
       const busList = Array.from(busSet);
 
-      unsubscribes = busList.map((id) =>
-        realtimeService.subscribeToBus(id, (state: BusLiveState) => {
-          if (!state?.busNo || !state.location) return;
-
-          setLocations((prev) => ({
-            ...prev,
-            [state.busNo]: {
-              busId: state.busNo,
-              latitude: state.location.latitude,
-              longitude: state.location.longitude,
-              heading: state.heading || 0,
-              speedKmh: state.speedKmh || 0,
-              status: (state.status as BusStatus) || 'on_route',
-              lastUpdated: Date.now(),
-              driverName: state.driverName || prev[state.busNo]?.driverName || 'Driver',
-              etaMinutes: state.etaMinutes ?? prev[state.busNo]?.etaMinutes ?? 0,
-              nextStopName: state.nextStop || prev[state.busNo]?.nextStopName || '',
-              schoolName: prev[state.busNo]?.schoolName || 'Kashmir Valley School',
-              complianceStatus: prev[state.busNo]?.complianceStatus || 'Compliant',
-            },
-          }));
-        })
-      );
+      busList.forEach((id) => {
+        const unsub = realtimeService.subscribeToBus(id, handleBusState);
+        unsubscribes.push(unsub);
+      });
     };
 
     setupSubscriptions();

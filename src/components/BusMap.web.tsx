@@ -394,16 +394,28 @@ const LeafletWebMap: React.FC<BusMapProps> = ({
     });
   }, [allBuses, getPinColor, leafletLoaded]);
 
-  // Smoothly center when focused on a single bus
-  const focusedBusIdRef = useRef<string | null>(null);
+  // Smoothly center and dynamically zoom/pan to active buses
+  const prevBusCountRef = useRef<number>(0);
   useEffect(() => {
     const map = mapInstanceRef.current;
-    if (!map || !busLocation) return;
-    if (focusedBusIdRef.current !== busLocation.busId) {
-      focusedBusIdRef.current = busLocation.busId;
-      map.panTo([busLocation.latitude, busLocation.longitude], { animate: true });
+    if (!map || !(window as any).L || allBuses.length === 0) return;
+    const L = (window as any).L;
+
+    if (allBuses.length === 1) {
+      const bus = allBuses[0];
+      if (prevBusCountRef.current === 0) {
+        map.setView([bus.latitude, bus.longitude], 15, { animate: true });
+      } else {
+        map.panTo([bus.latitude, bus.longitude], { animate: true });
+      }
+    } else if (allBuses.length > 1) {
+      const bounds = L.latLngBounds(allBuses.map((b) => [b.latitude, b.longitude]));
+      if (prevBusCountRef.current !== allBuses.length) {
+        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16, animate: true });
+      }
     }
-  }, [busLocation]);
+    prevBusCountRef.current = allBuses.length;
+  }, [allBuses]);
 
   return (
     <View style={styles.vectorContainer}>

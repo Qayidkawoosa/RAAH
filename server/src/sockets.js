@@ -19,6 +19,7 @@ export function registerSockets(io, store) {
       if (!state?.busNo) return;
       store.liveBuses.set(state.busNo, state);
       io.to(`bus:${state.busNo}`).emit('bus:state', state);
+      io.emit('bus:state', state);
     });
 
     socket.on('driver:event', (event) => {

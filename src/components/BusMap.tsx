@@ -41,15 +41,16 @@ export const BusMap: React.FC<BusMapProps> = ({ busLocation, busLocations = [], 
     if (mapRef.current && allBuses.length > 1) {
       const coords = allBuses.map(b => ({ latitude: b.latitude, longitude: b.longitude }));
       mapRef.current.fitToCoordinates(coords, { edgePadding: { top: 50, right: 50, bottom: 50, left: 50 }, animated: true });
-    } else if (mapRef.current && busLocation) {
+    } else if (mapRef.current && (busLocation || allBuses.length === 1)) {
+      const target = busLocation || allBuses[0];
       mapRef.current.animateToRegion({
-        latitude: busLocation.latitude,
-        longitude: busLocation.longitude,
+        latitude: target.latitude,
+        longitude: target.longitude,
         latitudeDelta: 0.02,
         longitudeDelta: 0.02,
       });
     }
-  }, [busLocation, allBuses.length]);
+  }, [busLocation, allBuses]);
 
   return (
     <View style={styles.container}>

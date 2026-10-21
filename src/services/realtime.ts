@@ -14,7 +14,7 @@ type EventListener = (event: TripEvent) => void;
 class RealtimeService {
   private socket: Socket | null = null;
 
-  private ensureSocket(): Socket {
+  ensureSocket(): Socket {
     if (!this.socket) {
       this.socket = io(env.socketUrl, { transports: ['websocket'] });
     }

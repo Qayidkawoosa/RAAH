@@ -212,7 +212,7 @@ export function setupTelemetrySockets(httpServer: HttpServer): Server {
       });
 
       // Broadcast frontend BusLiveState event format
-      socket.to(room).emit('bus:state', {
+      const liveState = {
         busNo,
         tripId,
         driverName,
@@ -226,7 +226,11 @@ export function setupTelemetrySockets(httpServer: HttpServer): Server {
         etaMinutes,
         nextStop,
         updatedAt: timestamp,
-      });
+      };
+
+      socket.to(room).emit('bus:state', liveState);
+      io.to(`bus:${busNo}`).emit('bus:state', liveState);
+      io.emit('bus:state', liveState);
     };
 
     socket.on('telemetry:location', handleLocationUpdate);
