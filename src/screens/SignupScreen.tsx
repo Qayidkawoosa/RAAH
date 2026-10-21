@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { TextInput, ActivityIndicator } from 'react-native-paper';
 import { useAuth } from '../context/AuthContext';
 import { useAppTheme } from '../hooks/useAppTheme';
-import { Mail, Lock, User, Phone, AlertCircle } from 'lucide-react-native';
+import { Mail, Lock, User, Phone, AlertCircle, KeyRound } from 'lucide-react-native';
 import { BrandMark } from '../components/BrandMark';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { AuthStackParamList } from '../navigation/types';
@@ -25,6 +25,26 @@ type SignupScreenNavigationProp = NativeStackNavigationProp<AuthStackParamList, 
 
 interface Props {
   navigation: SignupScreenNavigationProp;
+}
+
+// ── Client-side validation helpers ──────────────────────────────────────────
+const EMAIL_RE    = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_RE    = /^[6-9]\d{9}$/;
+const NAME_RE     = /^[A-Za-z\s]{3,}$/;
+const PLATE_RE    = /^JK[- ]?[0-9]{2}[- ]?[A-Z]{1,2}[- ]?[0-9]{4}$/i;
+const PW_UPPER    = /[A-Z]/;
+const PW_LOWER    = /[a-z]/;
+const PW_DIGIT    = /[0-9]/;
+const PW_SPECIAL  = /[^A-Za-z0-9]/;
+
+function getPasswordStrength(pw: string) {
+  return {
+    length:  pw.length >= 8,
+    upper:   PW_UPPER.test(pw),
+    lower:   PW_LOWER.test(pw),
+    digit:   PW_DIGIT.test(pw),
+    special: PW_SPECIAL.test(pw),
+  };
 }
 
 const SignupScreen: React.FC<Props> = ({ navigation }) => {
@@ -45,24 +65,53 @@ const SignupScreen: React.FC<Props> = ({ navigation }) => {
   const [assignedBusNo, setAssignedBusNo] = useState('');
   const [schoolName, setSchoolName] = useState('');
   const [rtoCode, setRtoCode] = useState('');
+  const [orgSecretKey, setOrgSecretKey] = useState('');
+
+  const pwStrength = getPasswordStrength(password);
+  const pwValid    = Object.values(pwStrength).every(Boolean);
 
   const handleSignup = async () => {
     clearError();
     setValidationError(null);
 
-    if (!email.trim() || !password.trim() || !name.trim()) {
-      setValidationError('Please complete all standard fields.');
+    // ── Name ──────────────────────────────────────────────────────────
+    if (!NAME_RE.test(name.trim())) {
+      setValidationError('Name must be at least 3 characters and contain only letters.');
       return;
     }
 
-    // Role-specific validation
-    const extraDetails: Record<string, string> = { phone };
+    // ── Email ─────────────────────────────────────────────────────────
+    if (!EMAIL_RE.test(email.trim())) {
+      setValidationError('Please enter a valid email address.');
+      return;
+    }
+
+    // ── Password policy ───────────────────────────────────────────────
+    if (!pwValid) {
+      setValidationError(
+        'Password must be at least 8 characters with 1 uppercase, 1 lowercase, 1 number, and 1 special character.'
+      );
+      return;
+    }
+
+    // ── Phone (if entered) ────────────────────────────────────────────
+    if (phone.trim() && !PHONE_RE.test(phone.trim())) {
+      setValidationError('Enter a valid 10-digit Indian phone number (starts with 6–9).');
+      return;
+    }
+
+    // ── Role-specific validation ──────────────────────────────────────
+    const extraDetails: Record<string, string> = { phone: phone.trim() };
     if (role === 'driver') {
       if (!vehicleNo.trim() || !licenseNo.trim()) {
         setValidationError('Drivers must provide Vehicle No. and License.');
         return;
       }
-      extraDetails.vehicleNo = vehicleNo.trim();
+      if (!PLATE_RE.test(vehicleNo.trim())) {
+        setValidationError('Vehicle plate must be a valid J&K format (e.g. JK-01-A-1234).');
+        return;
+      }
+      extraDetails.vehicleNo = vehicleNo.trim().toUpperCase();
       extraDetails.licenseNo = licenseNo.trim();
     } else if (role === 'parent') {
       if (!assignedBusNo.trim()) {
@@ -74,13 +123,23 @@ const SignupScreen: React.FC<Props> = ({ navigation }) => {
         setValidationError('School administrators must specify School Name.');
         return;
       }
-      extraDetails.schoolName = schoolName.trim();
+      if (!orgSecretKey.trim()) {
+        setValidationError('An Organization Secret Key is required for School Admin registration.');
+        return;
+      }
+      extraDetails.schoolName    = schoolName.trim();
+      extraDetails.orgSecretKey  = orgSecretKey.trim();
     } else if (role === 'rto') {
       if (!rtoCode.trim()) {
         setValidationError('RTO Authorities must specify their RTO jurisdiction code.');
         return;
       }
-      extraDetails.rtoCode = rtoCode.trim();
+      if (!orgSecretKey.trim()) {
+        setValidationError('An Organization Secret Key is required for RTO registration.');
+        return;
+      }
+      extraDetails.rtoCode      = rtoCode.trim();
+      extraDetails.orgSecretKey = orgSecretKey.trim();
     }
 
     setIsSubmitting(true);
@@ -123,7 +182,9 @@ const SignupScreen: React.FC<Props> = ({ navigation }) => {
       await register(email, password, name, role, extraDetails);
     } catch (e: any) {
       console.log('Signup error:', e.message);
-      setValidationError(e.message ?? 'Registration failed.');
+      // Surface API duplicate / forbidden messages directly
+      const msg: string = e?.response?.data?.message ?? e.message ?? 'Registration failed.';
+      setValidationError(msg);
     } finally {
       setIsSubmitting(false);
     }
@@ -137,14 +198,20 @@ const SignupScreen: React.FC<Props> = ({ navigation }) => {
             <TextInput
               label="Vehicle Reg No."
               value={vehicleNo}
-              onChangeText={setVehicleNo}
+              onChangeText={(t) => setVehicleNo(t.toUpperCase())}
               mode="outlined"
-              outlineColor={colors.border}
+              outlineColor={PLATE_RE.test(vehicleNo) ? colors.primary : colors.border}
               activeOutlineColor={colors.primary}
               textColor={colors.textPrimary}
               placeholder="e.g. JK-01-A-1234"
+              autoCapitalize="characters"
               style={[styles.input, { backgroundColor: colors.card }]}
             />
+            {vehicleNo.length > 2 && !PLATE_RE.test(vehicleNo) && (
+              <Text style={[typography.caption, { color: colors.danger, marginTop: 4, paddingHorizontal: 4 }]}>
+                Must match J&K format: JK-01-A-1234
+              </Text>
+            )}
             <TextInput
               label="Commercial Driver License (CDL)"
               value={licenseNo}
@@ -179,31 +246,61 @@ const SignupScreen: React.FC<Props> = ({ navigation }) => {
         );
       case 'school':
         return (
-          <TextInput
-            label="School Name"
-            value={schoolName}
-            onChangeText={setSchoolName}
-            mode="outlined"
-            outlineColor={colors.border}
-            activeOutlineColor={colors.primary}
-            textColor={colors.textPrimary}
-            placeholder="e.g. Burn Hall School Srinagar"
-            style={[styles.input, { backgroundColor: colors.card }]}
-          />
+          <>
+            <TextInput
+              label="School Name"
+              value={schoolName}
+              onChangeText={setSchoolName}
+              mode="outlined"
+              outlineColor={colors.border}
+              activeOutlineColor={colors.primary}
+              textColor={colors.textPrimary}
+              placeholder="e.g. Burn Hall School Srinagar"
+              style={[styles.input, { backgroundColor: colors.card }]}
+            />
+            <TextInput
+              label="Organization Secret Key"
+              value={orgSecretKey}
+              onChangeText={setOrgSecretKey}
+              secureTextEntry
+              mode="outlined"
+              outlineColor={colors.border}
+              activeOutlineColor={colors.primary}
+              textColor={colors.textPrimary}
+              placeholder="Provided by RAAH admin"
+              style={[styles.input, { backgroundColor: colors.card, marginTop: 12 }]}
+              left={<TextInput.Icon icon={() => <KeyRound size={18} color={colors.textSecondary} />} />}
+            />
+          </>
         );
       case 'rto':
         return (
-          <TextInput
-            label="RTO Authority Code"
-            value={rtoCode}
-            onChangeText={setRtoCode}
-            mode="outlined"
-            outlineColor={colors.border}
-            activeOutlineColor={colors.primary}
-            textColor={colors.textPrimary}
-            placeholder="e.g. JK-01 (Srinagar)"
-            style={[styles.input, { backgroundColor: colors.card }]}
-          />
+          <>
+            <TextInput
+              label="RTO Authority Code"
+              value={rtoCode}
+              onChangeText={setRtoCode}
+              mode="outlined"
+              outlineColor={colors.border}
+              activeOutlineColor={colors.primary}
+              textColor={colors.textPrimary}
+              placeholder="e.g. JK-01 (Srinagar)"
+              style={[styles.input, { backgroundColor: colors.card }]}
+            />
+            <TextInput
+              label="Organization Secret Key"
+              value={orgSecretKey}
+              onChangeText={setOrgSecretKey}
+              secureTextEntry
+              mode="outlined"
+              outlineColor={colors.border}
+              activeOutlineColor={colors.primary}
+              textColor={colors.textPrimary}
+              placeholder="Provided by RAAH admin"
+              style={[styles.input, { backgroundColor: colors.card, marginTop: 12 }]}
+              left={<TextInput.Icon icon={() => <KeyRound size={18} color={colors.textSecondary} />} />}
+            />
+          </>
         );
     }
   };
@@ -326,7 +423,28 @@ const SignupScreen: React.FC<Props> = ({ navigation }) => {
                 style={[styles.input, { backgroundColor: colors.card }]}
                 left={<TextInput.Icon icon={() => <Lock size={18} color={colors.textSecondary} />} />}
               />
+              {password.length > 0 && (
+                <View style={{ marginTop: 6, paddingHorizontal: 4, gap: 2 }}>
+                  {(
+                    [
+                      [pwStrength.length,  'At least 8 characters'],
+                      [pwStrength.upper,   '1 uppercase letter'],
+                      [pwStrength.lower,   '1 lowercase letter'],
+                      [pwStrength.digit,   '1 number'],
+                      [pwStrength.special, '1 special character'],
+                    ] as [boolean, string][]
+                  ).map(([ok, label]) => (
+                    <Text
+                      key={label}
+                      style={[typography.caption, { color: ok ? '#22c55e' : colors.danger }]}
+                    >
+                      {ok ? '✓' : '✗'} {label}
+                    </Text>
+                  ))}
+                </View>
+              )}
             </View>
+
 
             {/* Dynamic Role Fields */}
             <View style={[styles.divider, { backgroundColor: colors.surface }]} />

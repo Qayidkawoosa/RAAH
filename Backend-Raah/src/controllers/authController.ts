@@ -5,65 +5,142 @@ import { generateToken } from '../utils/jwt';
 import { UserRole } from '@prisma/client';
 import { fleetBuses } from './tripController';
 
+// ── Validation constants ──────────────────────────────────────────────────────
+const EMAIL_REGEX    = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_REGEX    = /^[6-9]\d{9}$/;               // 10-digit Indian mobile
+const JK_PLATE_REGEX = /^JK[- ]?[0-9]{2}[- ]?[A-Z]{1,2}[- ]?[0-9]{4}$/i;
+/** min 8 · 1 upper · 1 lower · 1 digit · 1 special */
+const PASSWORD_POLICY = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+const ORG_SECRET      = 'RAASTA_ADMIN_SECRET_2026';
+const PRIVILEGED_ROLES: UserRole[] = [UserRole.SCHOOL_ADMIN, UserRole.RTO];
+
 /**
  * POST /api/auth/register
  * Registers a new user account into PostgreSQL & returns JWT token
  */
 export async function register(req: Request, res: Response): Promise<void> {
   try {
-    const { email, password, name, role = 'PARENT', phone, schoolId, assignedBusNo, vehicleNo } = req.body;
+    const {
+      email,
+      password,
+      name,
+      role = 'PARENT',
+      phone,
+      schoolId,
+      assignedBusNo,
+      vehicleNo,
+      orgSecretKey,
+    } = req.body;
 
+    // ── Required fields ──────────────────────────────────────────────
     if (!email || !password || !name) {
       res.status(400).json({
         error: 'BadRequest',
-        message: 'email, password, and name are required fields',
+        message: 'email, password, and name are required fields.',
       });
       return;
     }
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
+    // ── Name: min 3 chars, letters & spaces only ─────────────────────
+    const nameClean = String(name).trim();
+    if (nameClean.length < 3 || !/^[A-Za-z\s]+$/.test(nameClean)) {
       res.status(400).json({
         error: 'BadRequest',
-        message: 'Invalid email address format',
+        message: 'Name must be at least 3 characters and contain only letters.',
       });
       return;
     }
 
-    if (typeof password !== 'string' || password.length < 6) {
+    // ── Strict email format ───────────────────────────────────────────
+    if (!EMAIL_REGEX.test(String(email))) {
       res.status(400).json({
         error: 'BadRequest',
-        message: 'Password must be at least 6 characters long',
+        message: 'Invalid email address format.',
       });
       return;
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
-
-    // 1. Check for existing user in PostgreSQL
-    const existingUser = await prisma.user.findUnique({
-      where: { email: normalizedEmail },
-    });
-
-    if (existingUser) {
-      res.status(409).json({
-        error: 'Conflict',
-        message: `An account with email '${email}' already exists`,
+    // ── Password policy ───────────────────────────────────────────────
+    if (typeof password !== 'string' || !PASSWORD_POLICY.test(password)) {
+      res.status(400).json({
+        error: 'BadRequest',
+        message:
+          'Password must be at least 8 characters and include at least 1 uppercase letter, 1 lowercase letter, 1 digit, and 1 special character.',
       });
       return;
     }
 
-    // 2. Hash password
-    const passwordHash = await hashPassword(password);
+    // ── Phone format (optional, but validated when provided) ──────────
+    const phoneClean = String(phone || '').trim();
+    if (phoneClean && !PHONE_REGEX.test(phoneClean)) {
+      res.status(400).json({
+        error: 'BadRequest',
+        message: 'Phone number must be a valid 10-digit Indian mobile number (starting with 6–9).',
+      });
+      return;
+    }
 
-    // 3. Map string role to Prisma enum safely
+    const normalizedEmail = String(email).toLowerCase().trim();
+
+    // ── Duplicate: email ──────────────────────────────────────────────
+    const existingByEmail = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (existingByEmail) {
+      res.status(409).json({ error: 'Conflict', message: 'An account with this email already exists.' });
+      return;
+    }
+
+    // ── Duplicate: phone ──────────────────────────────────────────────
+    if (phoneClean) {
+      const existingByPhone = await prisma.user.findFirst({ where: { phone: phoneClean } });
+      if (existingByPhone) {
+        res.status(409).json({ error: 'Conflict', message: 'This phone number is already registered.' });
+        return;
+      }
+    }
+
+    // ── Role mapping ───────────────────────────────────────────────
     const roleUpper = typeof role === 'string' ? role.toUpperCase() : 'PARENT';
     const upperRole: UserRole =
       roleUpper === 'SCHOOL' || roleUpper === 'ADMIN'
         ? UserRole.SCHOOL_ADMIN
         : (roleUpper as UserRole);
 
+    // ── Role protection: SCHOOL_ADMIN / RTO require org secret ────────
+    if (PRIVILEGED_ROLES.includes(upperRole)) {
+      if (!orgSecretKey || orgSecretKey !== ORG_SECRET) {
+        res.status(403).json({
+          error: 'Forbidden',
+          message: 'Unauthorized role registration. A valid Organization Secret Key is required.',
+        });
+        return;
+      }
+    }
+
     const busNum = (vehicleNo || assignedBusNo || '').trim().toUpperCase();
+
+    // ── Driver: J&K plate format + active-driver bus conflict check ───
+    if (upperRole === 'DRIVER' && busNum) {
+      if (!JK_PLATE_REGEX.test(busNum)) {
+        res.status(400).json({
+          error: 'BadRequest',
+          message: 'Vehicle registration must be a valid J&K plate (e.g. JK-01-A-1234).',
+        });
+        return;
+      }
+      const vehicleConflict = await prisma.user.findFirst({
+        where: { assignedBusNo: busNum, role: UserRole.DRIVER },
+      });
+      if (vehicleConflict) {
+        res.status(409).json({
+          error: 'Conflict',
+          message: 'Vehicle already assigned to another active driver.',
+        });
+        return;
+      }
+    }
+
+    // ── Hash password ─────────────────────────────────────────────────
+    const passwordHash = await hashPassword(password);
 
     // 4. Ensure a school exists in database for bus tenancy
     let targetSchoolId = schoolId ? String(schoolId).trim() : null;
