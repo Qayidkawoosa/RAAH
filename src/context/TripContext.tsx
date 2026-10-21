@@ -289,21 +289,20 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const initialLocation = await locationService.getCurrentLocation();
       if (initialLocation) {
         handlePoint(initialLocation);
+        realtimeService.publishDriverState({
+          busNo: busNumber,
+          tripId: newTrip.id,
+          driverName: profile.name,
+          status: 'active',
+          location: { latitude: initialLocation.latitude, longitude: initialLocation.longitude },
+          heading: 0,
+          speedKmh: 0,
+          etaMinutes: 10,
+          nextStop: routeConfig.stops[0]?.name || 'En route',
+          updatedAt: Date.now(),
+        });
       }
-      realtimeService.publishDriverState({
-        busNo: busNumber,
-        tripId: newTrip.id,
-        driverName: profile.name,
-        status: 'active',
-        location: initialLocation
-          ? { latitude: initialLocation.latitude, longitude: initialLocation.longitude }
-          : { latitude: 34.0837, longitude: 74.7973 },
-        heading: 0,
-        speedKmh: 0,
-        etaMinutes: 10,
-        nextStop: routeConfig.stops[0]?.name || 'En route',
-        updatedAt: Date.now(),
-      });
+      // If GPS not yet available, the first watchPosition tick will publish the real location.
 
       // Initialize DMS Engine for active trip
       if (profile.role === 'driver') {

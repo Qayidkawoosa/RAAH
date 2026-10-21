@@ -36,8 +36,13 @@ export const locationService = {
               speedKmh: Math.max(0, (pos.coords.speed ?? 0) * 3.6),
             });
           },
-          () => resolve(null),
-          { enableHighAccuracy: true, timeout: 5000 }
+          (err) => {
+            if (err.code === 1) {
+              alert('Please allow location access in your browser settings to track this bus.');
+            }
+            resolve(null);
+          },
+          { enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 }
         );
       });
     }
@@ -62,6 +67,7 @@ export const locationService = {
     if (typeof navigator !== 'undefined' && navigator.geolocation) {
       const watchId = navigator.geolocation.watchPosition(
         (pos) => {
+          console.log('📍 [Phone GPS Tick]', pos.coords.latitude, pos.coords.longitude, pos.coords.speed);
           onPoint({
             latitude: pos.coords.latitude,
             longitude: pos.coords.longitude,
@@ -69,8 +75,13 @@ export const locationService = {
             speedKmh: Math.max(0, (pos.coords.speed ?? 0) * 3.6),
           });
         },
-        (err) => console.warn('Browser GPS error:', err),
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        (err) => {
+          if (err.code === 1) {
+            alert('Please allow location access in your browser settings to track this bus.');
+          }
+          console.warn('Browser GPS error:', err);
+        },
+        { enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 }
       );
       return () => navigator.geolocation.clearWatch(watchId);
     }
