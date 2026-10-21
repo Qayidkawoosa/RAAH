@@ -3,6 +3,7 @@ import { prisma } from '../config/db';
 import { hashPassword, comparePassword } from '../utils/password';
 import { generateToken } from '../utils/jwt';
 import { UserRole } from '@prisma/client';
+import { fleetBuses } from './tripController';
 
 /**
  * POST /api/auth/register
@@ -10,7 +11,7 @@ import { UserRole } from '@prisma/client';
  */
 export async function register(req: Request, res: Response): Promise<void> {
   try {
-    const { email, password, name, role = 'PARENT', phone, schoolId } = req.body;
+    const { email, password, name, role = 'PARENT', phone, schoolId, assignedBusNo, vehicleNo } = req.body;
 
     if (!email || !password || !name) {
       res.status(400).json({
@@ -62,7 +63,51 @@ export async function register(req: Request, res: Response): Promise<void> {
         ? UserRole.SCHOOL_ADMIN
         : (roleUpper as UserRole);
 
-    // 4. Create user record in PostgreSQL
+    const busNum = (vehicleNo || assignedBusNo || '').trim().toUpperCase();
+
+    // 4. Ensure a school exists in database for bus tenancy
+    let targetSchoolId = schoolId ? String(schoolId).trim() : null;
+    if (!targetSchoolId) {
+      let defaultSchool = await prisma.school.findFirst();
+      if (!defaultSchool) {
+        defaultSchool = await prisma.school.create({
+          data: {
+            name: 'Kashmir Valley School',
+            address: 'Srinagar, Kashmir',
+            contactEmail: 'contact@kashmirvalley.edu',
+            contactPhone: '+91-194-2450000',
+          },
+        });
+      }
+      targetSchoolId = defaultSchool.id;
+    }
+
+    // 5. If this is a driver registering a bus, register the bus in PostgreSQL
+    if (busNum) {
+      await prisma.bus.upsert({
+        where: { busNo: busNum },
+        update: { schoolId: targetSchoolId },
+        create: {
+          busNo: busNum,
+          capacity: 32,
+          registrationStatus: 'Compliant',
+          schoolId: targetSchoolId,
+        },
+      });
+
+      // Register in memory fleet store so live trips can start immediately
+      fleetBuses.set(busNum, {
+        busNo: busNum,
+        plateNumber: busNum,
+        capacity: 32,
+        schoolId: targetSchoolId,
+        schoolName: 'Kashmir Valley School',
+        status: 'idle',
+        driverName: name.trim(),
+      });
+    }
+
+    // 6. Create user record in PostgreSQL
     const newUser = await prisma.user.create({
       data: {
         email: normalizedEmail,
@@ -70,11 +115,12 @@ export async function register(req: Request, res: Response): Promise<void> {
         name: name.trim(),
         role: upperRole,
         phone: phone?.trim(),
-        schoolId: schoolId?.trim(),
+        schoolId: targetSchoolId,
+        assignedBusNo: busNum || null,
       },
     });
 
-    // 5. Generate JWT token
+    // 7. Generate JWT token
     const token = generateToken({
       userId: newUser.id,
       role: newUser.role.toLowerCase(),
@@ -92,6 +138,8 @@ export async function register(req: Request, res: Response): Promise<void> {
         role: newUser.role.toLowerCase(),
         phone: newUser.phone,
         schoolId: newUser.schoolId,
+        assignedBus: newUser.assignedBusNo,
+        vehicleNo: newUser.assignedBusNo,
         createdAt: newUser.createdAt,
       },
     });
@@ -165,6 +213,7 @@ export async function login(req: Request, res: Response): Promise<void> {
         phone: user.phone,
         school: user.school?.name,
         assignedBus: user.assignedBusNo,
+        vehicleNo: user.assignedBusNo,
       },
     });
   } catch (error: any) {
@@ -213,6 +262,7 @@ export async function getMe(req: Request, res: Response): Promise<void> {
         phone: user.phone,
         school: user.school?.name,
         assignedBus: user.assignedBusNo,
+        vehicleNo: user.assignedBusNo,
         createdAt: user.createdAt,
       },
     });

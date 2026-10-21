@@ -36,16 +36,9 @@ class RealtimeService {
       return busSimulator.subscribe(busNo, onState, onEvent);
     }
     const socket = this.ensureSocket();
-    let receivedLiveState = false;
-    let fallbackUnsubscribe: (() => void) | null = null;
 
     const stateHandler = (state: BusLiveState): void => {
       if (state.busNo !== busNo) return;
-      receivedLiveState = true;
-      if (fallbackUnsubscribe) {
-        fallbackUnsubscribe();
-        fallbackUnsubscribe = null;
-      }
       onState(state);
     };
     const eventHandler = (event: TripEvent & { busNo?: string }): void => {
@@ -55,15 +48,7 @@ class RealtimeService {
     socket.on('bus:state', stateHandler);
     socket.on('bus:event', eventHandler);
 
-    const fallbackTimer = setTimeout(() => {
-      if (!receivedLiveState) {
-        fallbackUnsubscribe = busSimulator.subscribe(busNo, onState, onEvent);
-      }
-    }, 8000);
-
     return () => {
-      clearTimeout(fallbackTimer);
-      fallbackUnsubscribe?.();
       socket.emit('bus:unwatch', { busNo });
       socket.off('bus:state', stateHandler);
       socket.off('bus:event', eventHandler);

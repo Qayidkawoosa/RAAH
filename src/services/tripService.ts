@@ -83,7 +83,11 @@ export const tripService = {
 
   async getFleet(): Promise<FleetBus[]> {
     return liveOrDemo(
-      async () => (await apiClient.get<FleetBus[]>('/api/fleet')).data,
+      async () => {
+        const res = await apiClient.get<any>('/api/fleet');
+        const list = Array.isArray(res.data) ? res.data : (res.data?.buses || []);
+        return list;
+      },
       async () => {
         const stored = await readJson<FleetBus[]>(FLEET_KEY, demoFleet);
         return stored;

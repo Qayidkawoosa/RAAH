@@ -110,8 +110,9 @@ const DriverHomeScreen: React.FC = () => {
   }, [simulationRoutePath]);
 
   const activeRouteStops = selectedRouteConfig.stops;
+  const driverBusNo = user?.vehicleNo || user?.assignedBusNo;
 
-  const { location: simLocation } = useBusLocations(user?.vehicleNo ?? DEMO_BUS_NO);
+  const { location: simLocation } = useBusLocations(driverBusNo);
 
   const currentBusLocation = React.useMemo(() => {
     if (!trip) return null;
@@ -299,14 +300,14 @@ const DriverHomeScreen: React.FC = () => {
 
       <ScreenHeader
         title={`Salaam, ${user?.name.split(' ')[0] ?? 'Driver'}`}
-        subtitle={user?.vehicleNo ? `${user.vehicleNo} · ${selectedRouteConfig.routeName}` : selectedRouteConfig.routeName}
+        subtitle={driverBusNo ? `${driverBusNo} · ${selectedRouteConfig.routeName}` : selectedRouteConfig.routeName}
         showLogout
         showBrand
       />
 
       {/* Driver Monitoring System (DMS) Heads-Up Display & Alert Bar ONLY during active trip */}
       {trip && trip.status === 'active' ? (
-        <DMSHeadsUpDisplay busId={user?.vehicleNo} driverId={user?.uid} isTripActive={true} />
+        <DMSHeadsUpDisplay busId={driverBusNo} driverId={user?.uid} isTripActive={true} />
       ) : (
         <View
           style={{
@@ -543,7 +544,7 @@ const DriverHomeScreen: React.FC = () => {
                     demoEvents.push({
                       id: Date.now().toString(),
                       type: 'geofence_breach',
-                      busNo: user?.assignedBusNo ?? user?.vehicleNo ?? DEMO_BUS_NO,
+                      busNo: driverBusNo || 'BUS',
                       timestamp: Date.now()
                     });
                     await AsyncStorage.setItem('@raasta_demo_events', JSON.stringify(demoEvents));

@@ -55,26 +55,26 @@ const mapBackendUserToProfile = (
       ? 'rto'
       : 'parent';
 
-  return {
-    uid: backendUser?.id || backendUser?.uid || `user_${Date.now()}`,
-    email: backendUser?.email || fallbackEmail,
-    name: backendUser?.name || fallbackName || 'User',
-    role,
-    phone: backendUser?.phone || extraDetails.phone,
-    createdAt:
-      typeof backendUser?.createdAt === 'string'
-        ? backendUser.createdAt
-        : new Date(backendUser?.createdAt || Date.now()).toISOString(),
-    assignedBusNo:
+    const busNum =
+      backendUser?.vehicleNo ||
       backendUser?.assignedBus ||
       backendUser?.assignedBusNo ||
-      extraDetails.assignedBusNo ||
-      extraDetails.vehicleNo,
-    vehicleNo:
       extraDetails.vehicleNo ||
-      backendUser?.assignedBus ||
-      backendUser?.assignedBusNo,
-    licenseNo: extraDetails.licenseNo,
+      extraDetails.assignedBusNo;
+
+    return {
+      uid: backendUser?.id || backendUser?.uid || `user_${Date.now()}`,
+      email: backendUser?.email || fallbackEmail,
+      name: backendUser?.name || fallbackName || 'User',
+      role,
+      phone: backendUser?.phone || extraDetails.phone,
+      createdAt:
+        typeof backendUser?.createdAt === 'string'
+          ? backendUser.createdAt
+          : new Date(backendUser?.createdAt || Date.now()).toISOString(),
+      assignedBusNo: busNum,
+      vehicleNo: busNum,
+      licenseNo: extraDetails.licenseNo,
     schoolName:
       backendUser?.school ||
       backendUser?.schoolName ||

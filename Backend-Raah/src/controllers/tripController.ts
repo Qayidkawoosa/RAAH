@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { prisma } from '../config/db';
 
 export interface TripRecord {
   id: string;
@@ -29,51 +30,11 @@ export interface BusFleetItem {
   driverName?: string;
 }
 
-// In-memory Trip Store (Ready to be backed by Prisma when Person 1 migrations land)
+// In-memory Trip Store
 export const tripDatabase: Map<string, TripRecord> = new Map();
 
-// In-memory Fleet Bus Registry (Valley School Fleet)
-export const fleetBuses: Map<string, BusFleetItem> = new Map([
-  [
-    'BUS-04',
-    {
-      busNo: 'BUS-04',
-      plateNumber: 'JK-01-AB-4004',
-      capacity: 34,
-      schoolId: 'sch_dps_srinagar',
-      schoolName: 'Delhi Public School Srinagar',
-      status: 'idle',
-      currentRoute: 'Lal Chowk to Athwajan via Pantha Chowk',
-      driverName: 'Bashir Ahmad',
-    },
-  ],
-  [
-    'BUS-07',
-    {
-      busNo: 'BUS-07',
-      plateNumber: 'JK-01-CD-7007',
-      capacity: 40,
-      schoolId: 'sch_burnhall_srinagar',
-      schoolName: 'Burn Hall School Srinagar',
-      status: 'idle',
-      currentRoute: 'Hazratbal to Sonwar via Boulevard Road',
-      driverName: 'Ghulam Rasool',
-    },
-  ],
-  [
-    'BUS-12',
-    {
-      busNo: 'BUS-12',
-      plateNumber: 'JK-02-EF-1212',
-      capacity: 30,
-      schoolId: 'sch_mallinson_srinagar',
-      schoolName: 'Mallinson Girls School',
-      status: 'idle',
-      currentRoute: 'Rajbagh to Zakura via Nawa Kadal',
-      driverName: 'Manzoor Mir',
-    },
-  ],
-]);
+// In-memory Fleet Bus Registry — dynamically populated from real registered drivers/buses
+export const fleetBuses: Map<string, BusFleetItem> = new Map();
 
 /**
  * POST /api/trips/start
@@ -96,14 +57,54 @@ export async function startTrip(req: Request, res: Response): Promise<void> {
 
     const normalizedBusNo = busNo.trim().toUpperCase();
 
-    // Check if the bus exists in the fleet
-    const bus = fleetBuses.get(normalizedBusNo);
+    // Check if the bus exists in the fleet or PostgreSQL database
+    let bus = fleetBuses.get(normalizedBusNo);
     if (!bus) {
-      res.status(404).json({
-        error: 'NotFound',
-        message: `Bus '${busNo}' is not registered in the school fleet`,
+      const dbBus = await prisma.bus.findUnique({
+        where: { busNo: normalizedBusNo },
+        include: { school: true },
       });
-      return;
+      if (dbBus) {
+        bus = {
+          busNo: dbBus.busNo,
+          plateNumber: dbBus.busNo,
+          capacity: dbBus.capacity,
+          schoolId: dbBus.schoolId,
+          schoolName: dbBus.school?.name || 'Kashmir Valley School',
+          status: 'idle',
+          driverName,
+        };
+        fleetBuses.set(normalizedBusNo, bus);
+      } else {
+        // Dynamically register bus in database & memory so any registered driver can start immediately
+        let defaultSchool = await prisma.school.findFirst();
+        if (!defaultSchool) {
+          defaultSchool = await prisma.school.create({
+            data: {
+              name: 'Kashmir Valley School',
+              address: 'Srinagar, Kashmir',
+            },
+          });
+        }
+        await prisma.bus.create({
+          data: {
+            busNo: normalizedBusNo,
+            capacity: 32,
+            registrationStatus: 'Compliant',
+            schoolId: defaultSchool.id,
+          },
+        }).catch(() => {});
+        bus = {
+          busNo: normalizedBusNo,
+          plateNumber: normalizedBusNo,
+          capacity: 32,
+          schoolId: defaultSchool.id,
+          schoolName: defaultSchool.name,
+          status: 'idle',
+          driverName,
+        };
+        fleetBuses.set(normalizedBusNo, bus);
+      }
     }
 
     // Check if the bus is already in an active trip
@@ -239,11 +240,42 @@ export async function endTrip(req: Request, res: Response): Promise<void> {
  */
 export async function getFleetBuses(_req: Request, res: Response): Promise<void> {
   try {
-    const list = Array.from(fleetBuses.values());
+    const dbBuses = await prisma.bus.findMany({
+      include: { school: true, driver: true },
+    });
+
+    const buses = dbBuses.map((b) => ({
+      busNo: b.busNo,
+      plateNumber: b.busNo,
+      capacity: b.capacity,
+      schoolId: b.schoolId,
+      schoolName: b.school?.name || 'Kashmir Valley School',
+      status: fleetBuses.get(b.busNo)?.status || 'idle',
+      driverName: b.driver?.[0]?.name || fleetBuses.get(b.busNo)?.driverName || 'Driver',
+      studentsOnBoard: 0,
+      safetyScore: 100,
+    }));
+
+    for (const [busNo, item] of fleetBuses.entries()) {
+      if (!buses.some((b) => b.busNo === busNo)) {
+        buses.push({
+          busNo: item.busNo,
+          plateNumber: item.plateNumber,
+          capacity: item.capacity,
+          schoolId: item.schoolId,
+          schoolName: item.schoolName,
+          status: item.status,
+          driverName: item.driverName || 'Driver',
+          studentsOnBoard: 0,
+          safetyScore: 100,
+        });
+      }
+    }
+
     res.status(200).json({
       status: 'success',
-      count: list.length,
-      buses: list,
+      count: buses.length,
+      buses,
     });
   } catch (error: any) {
     console.error('getFleetBuses error:', error);
