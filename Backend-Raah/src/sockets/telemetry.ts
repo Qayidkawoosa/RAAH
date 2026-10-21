@@ -268,8 +268,8 @@ export function setupTelemetrySockets(httpServer: HttpServer): Server {
 
       console.log(`🚨 [DMS ALARM] ${violationType} (${severity}) on Bus ${busNo}!`);
 
-      // Broadcast backend DMS alert event
-      io.to(room).emit('dms:alert:broadcast', {
+      // Broadcast backend DMS alert event globally to all connected school admins
+      const dmsAlertPayload = {
         busNo,
         tripId: alert.tripId,
         driverId: alert.driverId,
@@ -281,10 +281,10 @@ export function setupTelemetrySockets(httpServer: HttpServer): Server {
         speedKmh,
         snapshotUrl: alert.snapshotUrl,
         timestamp,
-      });
+      };
 
-      // Broadcast frontend trip event
-      io.to(room).emit('bus:event', {
+      // Broadcast frontend trip event globally to all connected clients
+      const busEventPayload = {
         id: alert.id || `evt_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
         busNo,
         type: alert.type,
@@ -297,7 +297,11 @@ export function setupTelemetrySockets(httpServer: HttpServer): Server {
         severity,
         violationType,
         confidence,
-      });
+      };
+
+      // Global broadcasts to reach all school admins & dashboards
+      io.emit('dms:alert:broadcast', dmsAlertPayload);
+      io.emit('bus:event', busEventPayload);
 
       // Full Prisma PostgreSQL Persistence
       try {
@@ -312,6 +316,35 @@ export function setupTelemetrySockets(httpServer: HttpServer): Server {
           });
           if (activeTrip) {
             resolvedTripId = activeTrip.id;
+          } else {
+            const anyTrip = await prisma.trip.findFirst({
+              where: {
+                bus: { busNo: { equals: busNo, mode: 'insensitive' } },
+              },
+              orderBy: { startedAt: 'desc' },
+            });
+            if (anyTrip) {
+              resolvedTripId = anyTrip.id;
+            } else {
+              const busRecord = await prisma.bus.findFirst({
+                where: { busNo: { equals: busNo, mode: 'insensitive' } },
+                include: { driver: true },
+              });
+              if (busRecord) {
+                const driverUser = busRecord.driver[0] || (await prisma.user.findFirst({ where: { role: 'DRIVER' } }));
+                if (driverUser) {
+                  const newTrip = await prisma.trip.create({
+                    data: {
+                      busId: busRecord.id,
+                      driverId: driverUser.id,
+                      status: 'ACTIVE',
+                      startedAt: new Date(),
+                    },
+                  });
+                  resolvedTripId = newTrip.id;
+                }
+              }
+            }
           }
         }
 
@@ -331,7 +364,7 @@ export function setupTelemetrySockets(httpServer: HttpServer): Server {
           });
           console.log(`💾 [DB Saved] DMS incident logged to PostgreSQL (${violationType}) for Trip ${resolvedTripId}.`);
         } else {
-          console.warn(`⚠️ [DB Skip] No active trip found for Bus ${busNo}, incident not persisted to DB.`);
+          console.warn(`⚠️ [DB Skip] No active trip or bus found for Bus ${busNo}, incident not persisted to DB.`);
         }
       } catch (err) {
         console.error('Failed to log DMS incident to DB:', err);

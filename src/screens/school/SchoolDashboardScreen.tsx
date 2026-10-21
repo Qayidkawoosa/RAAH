@@ -29,6 +29,31 @@ import { busStatusBadge } from '../../utils/busStatus';
 import { BusMap } from '../../components/BusMap';
 import { useBusLocations, BusStatus, BusLocation } from '../../hooks/useBusLocations';
 import { dmsTelemetryBus } from '../../services/dms/dmsTelemetryBus';
+import { realtimeService } from '../../services/realtime';
+
+const playSafetyChime = () => {
+  try {
+    if (typeof window !== 'undefined') {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.35);
+        gain.gain.setValueAtTime(0.4, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.35);
+      }
+    }
+  } catch (err) {
+    // Audio context may require user gesture on web
+  }
+};
 
 const SchoolDashboardScreen: React.FC = () => {
   const { user } = useAuth();
@@ -97,9 +122,10 @@ const SchoolDashboardScreen: React.FC = () => {
     };
   }, []);
 
-  // Real-Time DMS Telemetry Bus Subscription (Zero-Backend Live Sync)
+  // Real-Time DMS Telemetry Bus & Socket.IO Alert Subscription
   useEffect(() => {
     let isMounted = true;
+    let lastHandledEventId = '';
 
     // Load initial persisted pending incidents
     tripService.getSafetyEvents().then((events) => {
@@ -109,17 +135,66 @@ const SchoolDashboardScreen: React.FC = () => {
       }
     });
 
-    // Real-time listener for incoming DMS safety anomalies across tabs/screens
-    const unsubscribeBus = dmsTelemetryBus.subscribeToSafetyEvents((event) => {
-      if (isMounted) {
-        setLiveDmsAlert(event);
-        setPendingIncidentCount((prev) => prev + 1);
+    const handleIncomingAlert = (rawEvt: any) => {
+      if (!isMounted || !rawEvt) return;
+      const eventId = rawEvt.event_id || rawEvt.id || `evt_${Date.now()}`;
+      if (eventId === lastHandledEventId) return;
+      lastHandledEventId = eventId;
+
+      const busNo = rawEvt.busNo || rawEvt.bus_id || 'JK-01-A-1234';
+      const violationType = (rawEvt.type || rawEvt.violationType || 'drowsiness').toLowerCase();
+      const severity = (rawEvt.severity || 'critical').toLowerCase();
+
+      const event: SafetyEvent = {
+        event_id: eventId,
+        trip_id: rawEvt.tripId || rawEvt.trip_id || 'trip_live',
+        bus_id: busNo,
+        driver_id: rawEvt.driverId || rawEvt.driver_id || 'DRV-101',
+        school_id: rawEvt.schoolId || rawEvt.school_id || 'SCH-01',
+        source: rawEvt.source || 'driver_cam',
+        type: violationType as any,
+        severity: severity as any,
+        confidence: typeof rawEvt.confidence === 'number' ? rawEvt.confidence : 0.95,
+        status: rawEvt.status || 'auto_flagged',
+        detected_at: rawEvt.detected_at || (rawEvt.timestamp ? new Date(rawEvt.timestamp).toISOString() : new Date().toISOString()),
+        lat: rawEvt.latitude ?? rawEvt.lat ?? 34.0837,
+        lng: rawEvt.longitude ?? rawEvt.lng ?? 74.7973,
+        speed_kmph: rawEvt.speedKmh ?? rawEvt.speed_kmph ?? rawEvt.speed ?? 0,
+        duration_ms: rawEvt.duration_ms ?? 3000,
+        clip_ref: rawEvt.clip_ref ?? null,
+        thumbnail_ref: rawEvt.snapshotUrl ?? rawEvt.thumbnail_ref ?? null,
+        reviewed_by: rawEvt.reviewed_by ?? null,
+        reviewed_at: rawEvt.reviewed_at ?? null,
+        review_note: rawEvt.message ?? rawEvt.review_note ?? `Anomaly detected on bus ${busNo}`,
+      };
+
+      setLiveDmsAlert(event);
+      playSafetyChime();
+      setPendingIncidentCount((prev) => prev + 1);
+    };
+
+    // 1. Subscribe to local/cross-tab telemetry bus
+    const unsubscribeBus = dmsTelemetryBus.subscribeToSafetyEvents(handleIncomingAlert);
+
+    // 2. Ensure Socket.IO is listening to server-side alerts from any vehicle/phone
+    let socket: any = null;
+    try {
+      socket = (realtimeService as any).ensureSocket?.();
+      if (socket) {
+        socket.on('bus:event', handleIncomingAlert);
+        socket.on('dms:alert:broadcast', handleIncomingAlert);
       }
-    });
+    } catch (err) {
+      console.warn('[SchoolDashboard] Failed to bind Socket.IO listeners:', err);
+    }
 
     return () => {
       isMounted = false;
       unsubscribeBus();
+      if (socket) {
+        socket.off('bus:event', handleIncomingAlert);
+        socket.off('dms:alert:broadcast', handleIncomingAlert);
+      }
     };
   }, []);
 
@@ -147,28 +222,29 @@ const SchoolDashboardScreen: React.FC = () => {
         </AppCard>
       ) : null}
 
-      {/* Real-Time Live DMS Anomaly Banner */}
+      {/* Real-Time Live DMS Anomaly Red Alert Banner */}
       {liveDmsAlert ? (
         <Animated.View entering={FadeInDown.duration(300)}>
           <AppCard
             accent="danger"
             style={{
               marginBottom: spacing.md,
-              borderColor: liveDmsAlert.severity === 'critical' ? colors.danger : colors.warning,
-              borderWidth: 1.5,
-              backgroundColor: liveDmsAlert.severity === 'critical' ? 'rgba(239, 68, 68, 0.08)' : 'rgba(245, 158, 11, 0.08)',
+              borderColor: colors.danger,
+              borderWidth: 2,
+              backgroundColor: 'rgba(239, 68, 68, 0.12)',
             }}
           >
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <AlertTriangle size={18} color={liveDmsAlert.severity === 'critical' ? colors.danger : colors.warning} />
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, paddingRight: 8 }}>
+                <AlertTriangle size={18} color={colors.danger} />
                 <Text
                   style={[
                     typography.titleMedium,
-                    { color: liveDmsAlert.severity === 'critical' ? colors.danger : colors.warning, fontWeight: '800' },
+                    { color: colors.danger, fontWeight: '800' },
                   ]}
+                  numberOfLines={2}
                 >
-                  LIVE DMS ALERT · BUS {liveDmsAlert.bus_id}
+                  {`DMS SAFETY ANOMALY DETECTED: ${liveDmsAlert.bus_id || (liveDmsAlert as any).busNo || 'JK-01-A-1234'} - ${(liveDmsAlert.type || (liveDmsAlert as any).violationType || 'SAFETY ANOMALY').toUpperCase().replace('_', ' ')}`}
                 </Text>
               </View>
               <Badge
@@ -177,7 +253,7 @@ const SchoolDashboardScreen: React.FC = () => {
               />
             </View>
             <Text style={[typography.bodyMedium, { color: colors.textPrimary, marginVertical: 4, fontWeight: '600' }]}>
-              {liveDmsAlert.type.toUpperCase().replace('_', ' ')}: {liveDmsAlert.review_note || `Driver anomaly detected on ${liveDmsAlert.source}. Confidence: ${(liveDmsAlert.confidence * 100).toFixed(0)}%`}
+              {liveDmsAlert.review_note || `Driver anomaly detected on ${liveDmsAlert.source}. Confidence: ${(liveDmsAlert.confidence * 100).toFixed(0)}%`}
             </Text>
             <Text style={[typography.caption, { color: colors.textSecondary, marginBottom: 6 }]}>
               Detected at {new Date(liveDmsAlert.detected_at).toLocaleTimeString()} · Driver ID: {liveDmsAlert.driver_id}
@@ -201,13 +277,13 @@ const SchoolDashboardScreen: React.FC = () => {
                 label="Review Incident"
                 variant="gradient"
                 onPress={() => navigation.navigate('SchoolIncidentReview')}
-                style={{ flex: 1, height: 34, paddingVertical: 0 }}
+                style={{ flex: 1, height: 36, paddingVertical: 0 }}
               />
               <PrimaryButton
                 label="Dismiss"
                 variant="outline"
                 onPress={() => setLiveDmsAlert(null)}
-                style={{ width: 80, height: 34, paddingVertical: 0 }}
+                style={{ width: 90, height: 36, paddingVertical: 0 }}
               />
             </View>
           </AppCard>
