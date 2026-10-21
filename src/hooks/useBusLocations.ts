@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import ROUTES from '../constants/routes.generated.json';
+import { realtimeService } from '../services/realtime';
+import { BusLiveState } from '../types/trip';
+import { ALL_ROUTES } from '../constants/demoRoute';
 
 export type BusStatus = 'on_route' | 'at_stop' | 'delayed' | 'signal_lost' | 'sos' | 'completed';
 
@@ -18,71 +20,46 @@ export interface BusLocation {
   complianceStatus?: string;
 }
 
-const mockLocations: Record<string, BusLocation> = {
-  'JK-01-A-1234': {
-    busId: 'JK-01-A-1234',
-    latitude: 34.1347,
-    longitude: 74.8008,
-    heading: 45,
-    speedKmh: 35,
-    status: 'on_route',
-    etaMinutes: 12,
-    nextStopName: 'Hazratbal',
-    lastUpdated: Date.now(),
-    schoolName: 'Kashmir Valley School',
-    driverName: 'Jehangir Dar',
-    complianceStatus: 'Compliant'
-  },
-  'JK-01-B-9988': {
-    busId: 'JK-01-B-9988',
-    latitude: 34.0833,
-    longitude: 74.7950,
-    heading: 120,
-    speedKmh: 52,
-    status: 'delayed', // Overspeeding/Delayed incident
-    etaMinutes: 5,
-    nextStopName: 'Lal Chowk',
-    lastUpdated: Date.now(),
-    schoolName: 'Burn Hall School',
-    driverName: 'Tariq Bhat',
-    complianceStatus: 'Insurance Expired'
-  },
-  'JK-01-C-5544': {
-    busId: 'JK-01-C-5544',
-    latitude: 34.0620,
-    longitude: 74.8010,
-    heading: 270,
-    speedKmh: 0,
-    status: 'sos', // SOS incident
-    etaMinutes: 20,
-    nextStopName: 'Jawahar Nagar',
-    lastUpdated: Date.now(),
-    schoolName: 'Presentation Convent',
-    driverName: 'Sameer Khan',
-    complianceStatus: 'Compliant'
-  }
-};
+const initialLocations: Record<string, BusLocation> = {};
+export const mockLocations = initialLocations;
 
 /**
- * Hook to get simulated bus locations.
- * In a real app, this would subscribe to the simulatorService.
+ * Hook to get real-time or simulated bus locations dynamically.
  */
 export function useBusLocations(busId?: string) {
-  const [locations, setLocations] = useState<Record<string, BusLocation>>(mockLocations);
+  const [locations, setLocations] = useState<Record<string, BusLocation>>(initialLocations);
 
   useEffect(() => {
-    // Simple interval to simulate "lastUpdated" ticks
-    const interval = setInterval(() => {
-      setLocations(prev => {
-        const next = { ...prev };
-        for (const id in next) {
-          next[id] = { ...next[id], lastUpdated: Date.now() };
-        }
-        return next;
-      });
-    }, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    const busList = busId ? [busId] : ALL_ROUTES.map((r) => r.busNo);
+
+    const unsubscribes = busList.map((id) =>
+      realtimeService.subscribeToBus(id, (state: BusLiveState) => {
+        if (!state?.busNo || !state.location) return;
+
+        setLocations((prev) => ({
+          ...prev,
+          [state.busNo]: {
+            busId: state.busNo,
+            latitude: state.location.latitude,
+            longitude: state.location.longitude,
+            heading: state.heading || 0,
+            speedKmh: state.speedKmh || 0,
+            status: 'on_route',
+            lastUpdated: Date.now(),
+            driverName: state.driverName || 'Driver',
+            etaMinutes: state.etaMinutes ?? prev[state.busNo]?.etaMinutes ?? 0,
+            nextStopName: state.nextStop || prev[state.busNo]?.nextStopName || '',
+            schoolName: prev[state.busNo]?.schoolName || 'Kashmir Valley School',
+            complianceStatus: prev[state.busNo]?.complianceStatus || 'Compliant',
+          },
+        }));
+      })
+    );
+
+    return () => {
+      unsubscribes.forEach((unsub) => unsub());
+    };
+  }, [busId]);
 
   return {
     locations,

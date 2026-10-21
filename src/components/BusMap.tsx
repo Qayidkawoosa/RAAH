@@ -87,11 +87,11 @@ export const BusMap: React.FC<BusMapProps> = ({ busLocation, busLocations = [], 
 
 const styles = StyleSheet.create({
   container: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: 12,
     overflow: 'hidden',
   },
   map: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
 });
