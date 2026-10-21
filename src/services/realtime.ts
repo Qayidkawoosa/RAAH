@@ -1,7 +1,6 @@
 import { io, Socket } from 'socket.io-client';
-import { env, isLiveBackend } from '../config/env';
+import { env } from '../config/env';
 import { BusLiveState, TripEvent } from '../types/trip';
-import { busSimulator } from './demo/busSimulator';
 
 type StateListener = (state: BusLiveState) => void;
 type EventListener = (event: TripEvent) => void;
@@ -23,18 +22,14 @@ class RealtimeService {
 
   /**
    * Watch a bus (parent/school/RTO side). Returns an unsubscribe fn.
-   * In live mode, if the server sends nothing within 8 s (server down,
-   * wrong IP), the watch falls back to the in-app simulator so tracking
-   * screens are never blank.
+   * Only real Socket.IO telemetry is accepted — the simulator is disabled.
    */
   subscribeToBus(
     busNo: string,
     onState: StateListener,
     onEvent?: EventListener
   ): () => void {
-    if (!isLiveBackend) {
-      return busSimulator.subscribe(busNo, onState, onEvent);
-    }
+    if (!env.socketUrl) return () => {};
     const socket = this.ensureSocket();
 
     const stateHandler = (state: BusLiveState): void => {
@@ -55,15 +50,13 @@ class RealtimeService {
     };
   }
 
-  /** Publish the driver's live state (driver side, live backend only). */
+  /** Publish the driver's live state (driver side). */
   publishDriverState(state: BusLiveState): void {
-    if (!isLiveBackend) return;
     this.ensureSocket().emit('driver:state', state);
   }
 
   /** Publish a safety event raised on the driver's phone. */
   publishEvent(busNo: string, event: TripEvent): void {
-    if (!isLiveBackend) return;
     this.ensureSocket().emit('driver:event', { ...event, busNo });
   }
 
