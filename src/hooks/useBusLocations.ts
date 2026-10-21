@@ -34,19 +34,25 @@ export function useBusLocations(busId?: string) {
     let isMounted = true;
 
     const setupSubscriptions = async () => {
-      let busList: string[] = [];
+      const defaultBuses = ['BUS-04', 'BUS-07', 'BUS-12', 'JK-01-A-1234'];
+      const busSet = new Set<string>(defaultBuses);
+
       if (busId) {
-        busList = [busId];
-      } else {
-        try {
-          const fleet = await tripService.getFleet();
-          busList = fleet.map((b) => b.busNo);
-        } catch {
-          busList = [];
-        }
+        busSet.add(busId);
+      }
+
+      try {
+        const fleet = await tripService.getFleet();
+        fleet.forEach((b) => {
+          if (b.busNo) busSet.add(b.busNo);
+        });
+      } catch {
+        // keep default set
       }
 
       if (!isMounted) return;
+
+      const busList = Array.from(busSet);
 
       unsubscribes = busList.map((id) =>
         realtimeService.subscribeToBus(id, (state: BusLiveState) => {
@@ -60,9 +66,9 @@ export function useBusLocations(busId?: string) {
               longitude: state.location.longitude,
               heading: state.heading || 0,
               speedKmh: state.speedKmh || 0,
-              status: 'on_route',
+              status: (state.status as BusStatus) || 'on_route',
               lastUpdated: Date.now(),
-              driverName: state.driverName || 'Driver',
+              driverName: state.driverName || prev[state.busNo]?.driverName || 'Driver',
               etaMinutes: state.etaMinutes ?? prev[state.busNo]?.etaMinutes ?? 0,
               nextStopName: state.nextStop || prev[state.busNo]?.nextStopName || '',
               schoolName: prev[state.busNo]?.schoolName || 'Kashmir Valley School',

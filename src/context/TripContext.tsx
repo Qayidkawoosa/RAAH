@@ -17,7 +17,6 @@ import {
 } from '../utils/geo';
 import { createId } from '../utils/id';
 import { locationService } from '../services/locationService';
-import { startDriveSimulation } from '../services/demo/driveSimulator';
 import { realtimeService } from '../services/realtime';
 import { tripService } from '../services/tripService';
 import { isLiveBackend } from '../config/env';
@@ -151,20 +150,25 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const previous = current.path[current.path.length - 1];
-      const addedKm = previous ? distanceMeters(previous, point) / 1000 : 0;
+      const distM = previous ? distanceMeters(previous, point) : 0;
+      // Jitter dampening: stationary devices resting on a desk stay at 0 km/h and steady
+      const normalizedSpeed = point.speedKmh < 1.5 ? 0 : Math.round(point.speedKmh);
+      const cleanPoint: TripPoint = { ...point, speedKmh: normalizedSpeed };
+
+      const addedKm = distM > 5 ? distM / 1000 : 0;
       const updated: Trip = {
         ...current,
-        path: [...current.path, point],
+        path: [...current.path, cleanPoint],
         distanceKm: current.distanceKm + addedKm,
-        maxSpeedKmh: Math.max(current.maxSpeedKmh, point.speedKmh),
+        maxSpeedKmh: Math.max(current.maxSpeedKmh, cleanPoint.speedKmh),
       };
-      const elapsedH = (point.timestamp - updated.startedAt) / 3_600_000;
+      const elapsedH = (cleanPoint.timestamp - updated.startedAt) / 3_600_000;
       updated.avgSpeedKmh = elapsedH > 0 ? Math.min(updated.distanceKm / elapsedH, 80) : 0;
       tripRef.current = updated;
       setTrip(updated);
-      setLastPoint(point);
+      setLastPoint(cleanPoint);
 
-      monitorRef.current?.addPoint(point).forEach(pushEvent);
+      monitorRef.current?.addPoint(cleanPoint).forEach(pushEvent);
 
       // 2. Check upcoming student pickups
       let foundUpcoming = false;
@@ -176,7 +180,7 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const stop = routeStops.find((s) => s.name === student.pickupStop);
         if (!stop) continue;
 
-        const dist = distanceMeters(point, stop.location);
+        const dist = distanceMeters(cleanPoint, stop.location);
         if (dist < 400 && !currentNotified.includes(stop.name)) {
           foundUpcoming = true;
           if (!upcomingPickupRef.current || upcomingPickupRef.current.stopName !== stop.name) {
@@ -201,25 +205,25 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUpcomingPickup(null);
       }
 
-      const remainingM = remainingPathMeters(point, pathPoints);
-      const etaSpeed = Math.max(point.speedKmh, ETA_FALLBACK_SPEED_KMH);
+      const remainingM = remainingPathMeters(cleanPoint, pathPoints);
+      const etaSpeed = Math.max(cleanPoint.speedKmh, ETA_FALLBACK_SPEED_KMH);
       const offRoute = offDemoRouteRef.current;
       realtimeService.publishDriverState({
         busNo: updated.busNo,
         tripId: updated.id,
         driverName: updated.driverName,
         status: updated.status,
-        location: { latitude: point.latitude, longitude: point.longitude },
-        heading: previous ? bearingDegrees(previous, point) : 0,
-        speedKmh: point.speedKmh,
+        location: { latitude: cleanPoint.latitude, longitude: cleanPoint.longitude },
+        heading: previous && distM > 5 ? bearingDegrees(previous, cleanPoint) : 0,
+        speedKmh: cleanPoint.speedKmh,
         etaMinutes: offRoute
           ? 0
           : Math.max(1, Math.min(999, Math.round(remainingM / 1000 / (etaSpeed / 60)))),
         nextStop: offRoute
           ? 'En route'
-          : routeStops.find((stop) => distanceMeters(point, stop.location) < remainingM)?.name ??
+          : routeStops.find((stop) => distanceMeters(cleanPoint, stop.location) < remainingM)?.name ??
             routeStops[routeStops.length - 1].name,
-        updatedAt: point.timestamp,
+        updatedAt: cleanPoint.timestamp,
       });
     },
     [pushEvent, endTrip]
@@ -251,9 +255,11 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
       upcomingPickupRef.current = null;
       setUpcomingPickup(null);
 
+      const busNumber = profile.vehicleNo || (profile as any).assignedBus || (profile as any).assignedBusNo || 'JK-01-A-1234';
+
       const newTrip: Trip = {
         id: createId('trip'),
-        busNo: profile.vehicleNo ?? 'JK-01-A-1234',
+        busNo: busNumber,
         driverId: profile.uid,
         driverName: profile.name,
         routeName: routeConfig.routeName,
@@ -287,21 +293,13 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
         dmsEngine.setTrackingActive(true);
       }
 
-      // On Web or Demo mode (no live backend), always run the drive simulation along the route
-      // so the demo bus visibly drives along the Dal Lake route with speed and stop progress!
-      const isWeb = typeof window !== 'undefined';
-      if (!isLiveBackend || isWeb) {
-        setIsSimulatedGps(true);
-        stopWatchingRef.current = startDriveSimulation(handlePoint, routePath);
-      } else {
-        const hasPermission = await locationService.requestPermission();
-        if (hasPermission) {
-          setIsSimulatedGps(false);
-          stopWatchingRef.current = await locationService.watchPosition(handlePoint);
-        } else {
-          setIsSimulatedGps(true);
-          stopWatchingRef.current = startDriveSimulation(handlePoint, routePath);
-        }
+      // Enforce 100% Real Device GPS: ALWAYS acquire real satellite/browser GPS
+      setIsSimulatedGps(false);
+      try {
+        await locationService.requestPermission();
+        stopWatchingRef.current = await locationService.watchPosition(handlePoint);
+      } catch (err) {
+        console.warn('Real GPS watching error:', err);
       }
     },
     [handlePoint, simulationRoutePath]
@@ -375,12 +373,8 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const setSimulationRoute = useCallback(
     (newRoute: LatLng[]) => {
       setSimulationRoutePath(newRoute);
-      if (tripRef.current && tripRef.current.status === 'active' && isSimulatedGps) {
-        stopWatchingRef.current?.();
-        stopWatchingRef.current = startDriveSimulation(handlePoint, newRoute);
-      }
     },
-    [isSimulatedGps, handlePoint]
+    []
   );
 
   return (

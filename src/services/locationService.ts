@@ -4,17 +4,43 @@ import { TripPoint } from '../types/trip';
 export type LocationUnsubscribe = () => void;
 
 /**
- * Wraps expo-location for driver GPS tracking. If permission is denied (or
- * the emulator has no GPS fix), the TripContext falls back to the demo
- * simulator so the demo always works.
+ * Wraps expo-location and browser navigator.geolocation for 100% real driver GPS tracking.
  */
 export const locationService = {
   async requestPermission(): Promise<boolean> {
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      return new Promise((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          () => resolve(true),
+          (err) => {
+            console.warn('Browser GPS permission error or denied:', err);
+            resolve(false);
+          },
+          { enableHighAccuracy: true, timeout: 5000 }
+        );
+      });
+    }
     const { status } = await Location.requestForegroundPermissionsAsync();
     return status === 'granted';
   },
 
   async getCurrentLocation(): Promise<TripPoint | null> {
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      return new Promise((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            resolve({
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              timestamp: pos.timestamp,
+              speedKmh: Math.max(0, (pos.coords.speed ?? 0) * 3.6),
+            });
+          },
+          () => resolve(null),
+          { enableHighAccuracy: true, timeout: 5000 }
+        );
+      });
+    }
     try {
       const location = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
@@ -33,6 +59,22 @@ export const locationService = {
   async watchPosition(
     onPoint: (point: TripPoint) => void
   ): Promise<LocationUnsubscribe> {
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      const watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          onPoint({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            timestamp: pos.timestamp,
+            speedKmh: Math.max(0, (pos.coords.speed ?? 0) * 3.6),
+          });
+        },
+        (err) => console.warn('Browser GPS error:', err),
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      );
+      return () => navigator.geolocation.clearWatch(watchId);
+    }
+
     const subscription = await Location.watchPositionAsync(
       {
         accuracy: Location.Accuracy.BestForNavigation,

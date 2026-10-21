@@ -4,5 +4,6 @@
     "strict": false,
     "skipLibCheck": true,
     "noImplicitAny": false
-  }
+  },
+  "exclude": ["Backend-Raah", "server", "scripts", "node_modules"]
 }
