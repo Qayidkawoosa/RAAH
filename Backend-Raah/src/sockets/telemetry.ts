@@ -17,6 +17,12 @@ export interface LocationPayload {
   timestamp?: number;
   updatedAt?: number;
   driverName?: string;
+  routeName?: string;
+  routeId?: string;
+  endedAtLocation?: {
+    latitude: number;
+    longitude: number;
+  } | null;
   status?: string;
   etaMinutes?: number;
   nextStop?: string;
@@ -198,6 +204,10 @@ export function setupTelemetrySockets(httpServer: HttpServer): Server {
       const etaMinutes = data.etaMinutes ?? 0;
       const nextStop = data.nextStop || '';
 
+      const routeName = (data as any).routeName || '';
+      const routeId = (data as any).routeId || '';
+      const endedAtLocation = (data as any).endedAtLocation || null;
+
       console.log(`📍 [GPS Broadcast] Bus ${busNo} at (${latitude.toFixed(4)}, ${longitude.toFixed(4)}) | Speed: ${speed} km/h`);
 
       // Broadcast backend telemetry event format
@@ -216,6 +226,8 @@ export function setupTelemetrySockets(httpServer: HttpServer): Server {
         busNo,
         tripId,
         driverName,
+        routeName,
+        routeId,
         status,
         location: {
           latitude,
@@ -225,6 +237,7 @@ export function setupTelemetrySockets(httpServer: HttpServer): Server {
         speedKmh: speed,
         etaMinutes,
         nextStop,
+        endedAtLocation,
         updatedAt: timestamp,
       };
 
@@ -235,6 +248,17 @@ export function setupTelemetrySockets(httpServer: HttpServer): Server {
 
     socket.on('telemetry:location', handleLocationUpdate);
     socket.on('driver:state', handleLocationUpdate);
+
+    socket.on('driver:offline', (payload: any) => {
+      const busNo = extractBusNo(payload);
+      if (!busNo) return;
+      console.log(`📴 [Driver Offline] Bus ${busNo} logged out.`);
+      io.emit('bus:offline', {
+        busNo,
+        logoutLocation: payload?.logoutLocation || null,
+        timestamp: payload?.timestamp || Date.now(),
+      });
+    });
 
     // 4. Driver Safety Alarms — Dual support for `dms:alert` AND `driver:event`
     const handleDmsAlert = async (raw: unknown) => {

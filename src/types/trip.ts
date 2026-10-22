@@ -60,11 +60,15 @@ export interface BusLiveState {
   busNo: string;
   tripId: string | null;
   driverName: string;
+  routeName?: string;
+  routeId?: string;
   status: TripStatus;
   location: LatLng;
   heading: number;
   speedKmh: number;
   etaMinutes: number;
   nextStop: string;
+  endedAtLocation?: LatLng;
   updatedAt: number;
 }
+

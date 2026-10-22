@@ -18,6 +18,9 @@ export interface BusLocation {
   schoolName?: string;
   driverName?: string;
   complianceStatus?: string;
+  routeName?: string;
+  routeId?: string;
+  endedAtLocation?: { latitude: number; longitude: number };
 }
 
 const initialLocations: Record<string, BusLocation> = {};
@@ -54,13 +57,31 @@ export function useBusLocations(busId?: string) {
             nextStopName: state.nextStop || prev[state.busNo]?.nextStopName || '',
             schoolName: prev[state.busNo]?.schoolName || 'Kashmir Valley School',
             complianceStatus: prev[state.busNo]?.complianceStatus || 'Compliant',
+            routeName: (state as any).routeName || prev[state.busNo]?.routeName,
+            routeId: (state as any).routeId || prev[state.busNo]?.routeId,
+            endedAtLocation: (state as any).endedAtLocation || prev[state.busNo]?.endedAtLocation,
           },
         }));
       };
 
+      const handleBusOffline = (data: { busNo: string }) => {
+        if (!data?.busNo) return;
+        const target = data.busNo.toUpperCase().trim();
+        setLocations((prev) => {
+          const next = { ...prev };
+          delete next[target];
+          delete next[data.busNo];
+          return next;
+        });
+      };
+
       if (socket) {
         socket.on('bus:state', handleBusState);
-        unsubscribes.push(() => socket.off('bus:state', handleBusState));
+        socket.on('bus:offline', handleBusOffline);
+        unsubscribes.push(() => {
+          socket.off('bus:state', handleBusState);
+          socket.off('bus:offline', handleBusOffline);
+        });
       }
 
       // 2. Specific per-bus subscriptions for rooms

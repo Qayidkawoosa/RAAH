@@ -299,8 +299,8 @@ const SchoolDashboardScreen: React.FC = () => {
           />
         </View>
 
-        <View style={{ flexDirection: 'row', marginTop: 12, gap: 8 }}>
-          {(['all', 'on_route', 'delayed', 'sos'] as const).map(filter => (
+        <View style={{ flexDirection: 'row', marginTop: 12, gap: 8, flexWrap: 'wrap' }}>
+          {(['all', 'on_route', 'completed', 'delayed', 'sos'] as const).map(filter => (
             <TouchableOpacity
               key={filter}
               onPress={() => setStatusFilter(filter as any)}
@@ -321,16 +321,57 @@ const SchoolDashboardScreen: React.FC = () => {
         {selectedFleetBus && (
           <AppCard style={{ marginTop: 12, padding: 12, borderColor: colors.primary, borderWidth: 1 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <View>
-                <Text style={[typography.titleMedium, { color: colors.textPrimary }]}>{selectedFleetBus.busId}</Text>
-                <Text style={[typography.bodySmall, { color: colors.textSecondary }]}>Next: {selectedFleetBus.nextStopName} ({selectedFleetBus.etaMinutes}m)</Text>
-                <Text style={[typography.caption, { color: colors.textSecondary, marginTop: 4 }]}>{Math.round(selectedFleetBus.speedKmh)} km/h · Students: 32/40</Text>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <Text style={[typography.titleMedium, { color: colors.textPrimary }]}>{selectedFleetBus.busId}</Text>
+                  <Badge 
+                    label={selectedFleetBus.status.toUpperCase().replace('_', ' ')} 
+                    tone={selectedFleetBus.status === 'sos' ? 'danger' : selectedFleetBus.status === 'delayed' ? 'warning' : selectedFleetBus.status === 'completed' ? 'neutral' : 'success'} 
+                  />
+                </View>
+
+                {/* Driver name with active status badge */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                  <Text style={[typography.bodyMedium, { color: colors.textPrimary, fontWeight: '600' }]}>
+                    👤 {selectedFleetBus.driverName || 'Assigned Driver'}
+                  </Text>
+                  <Badge
+                    label={selectedFleetBus.status === 'completed' ? 'Trip Ended' : 'Active On Duty'}
+                    tone={selectedFleetBus.status === 'completed' ? 'neutral' : 'success'}
+                  />
+                </View>
+
+                {/* Assigned route name */}
+                <Text style={[typography.bodySmall, { color: colors.textSecondary, marginTop: 4 }]}>
+                  🛣️ Route: {selectedFleetBus.routeName || 'Assigned Planned Route'}
+                </Text>
+
+                {/* Completed Trip Location or Active Telemetry */}
+                {selectedFleetBus.status === 'completed' ? (
+                  <View style={{ backgroundColor: 'rgba(16, 185, 129, 0.1)', padding: 6, borderRadius: 6, marginTop: 6 }}>
+                    <Text style={[typography.caption, { color: colors.success, fontWeight: '700' }]}>
+                      {`🏁 Trip Ended at: ${
+                        selectedFleetBus.endedAtLocation
+                          ? selectedFleetBus.endedAtLocation.latitude.toFixed(4) + ', ' + selectedFleetBus.endedAtLocation.longitude.toFixed(4)
+                          : 'Destination School'
+                      }`}
+                    </Text>
+                  </View>
+                ) : (
+                  <>
+                    <Text style={[typography.bodySmall, { color: colors.textSecondary, marginTop: 2 }]}>
+                      Next: {selectedFleetBus.nextStopName || 'En route'} ({selectedFleetBus.etaMinutes}m)
+                    </Text>
+                    <Text style={[typography.caption, { color: colors.textSecondary, marginTop: 4 }]}>
+                      {Math.round(selectedFleetBus.speedKmh)} km/h · Students: 32/40
+                    </Text>
+                  </>
+                )}
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 <TouchableOpacity onPress={() => setSelectedFleetBus(null)} style={{ padding: 4 }}>
                   <Text style={[typography.caption, { color: colors.textSecondary }]}>✕ Close</Text>
                 </TouchableOpacity>
-                <Badge label={selectedFleetBus.status} tone={selectedFleetBus.status === 'sos' ? 'danger' : selectedFleetBus.status === 'delayed' ? 'warning' : 'success'} />
               </View>
             </View>
           </AppCard>

@@ -1,6 +1,6 @@
 import { io, Socket } from 'socket.io-client';
 import { env } from '../config/env';
-import { BusLiveState, TripEvent } from '../types/trip';
+import { BusLiveState, LatLng, TripEvent } from '../types/trip';
 
 type StateListener = (state: BusLiveState) => void;
 type EventListener = (event: TripEvent) => void;
@@ -53,6 +53,11 @@ class RealtimeService {
   /** Publish the driver's live state (driver side). */
   publishDriverState(state: BusLiveState): void {
     this.ensureSocket().emit('driver:state', state);
+  }
+
+  /** Publish driver offline / logout event */
+  publishDriverOffline(data: { busNo: string; logoutLocation?: LatLng | null; timestamp?: number }): void {
+    this.ensureSocket().emit('driver:offline', data);
   }
 
   /** Publish a safety event raised on the driver's phone. */

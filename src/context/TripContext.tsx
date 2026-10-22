@@ -98,6 +98,25 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const current = tripRef.current;
     if (!current) return null;
     const endedAt = Date.now();
+
+    const finalPoint = lastPoint || (current.path.length > 0 ? current.path[current.path.length - 1] : null);
+    if (finalPoint) {
+      realtimeService.publishDriverState({
+        busNo: current.busNo,
+        tripId: current.id,
+        driverName: current.driverName,
+        routeName: current.routeName,
+        status: 'completed',
+        location: { latitude: finalPoint.latitude, longitude: finalPoint.longitude },
+        heading: 0,
+        speedKmh: 0,
+        etaMinutes: 0,
+        nextStop: 'Trip Completed (Parked)',
+        endedAtLocation: { latitude: finalPoint.latitude, longitude: finalPoint.longitude },
+        updatedAt: endedAt,
+      });
+    }
+
     const finished: Trip = {
       ...current,
       status: 'completed',
@@ -123,7 +142,7 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // History persistence must never block ending a trip.
     }
     return finished;
-  }, []);
+  }, [lastPoint]);
 
   const handlePoint = useCallback(
     (point: TripPoint): void => {
@@ -213,6 +232,7 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
         busNo: updated.busNo,
         tripId: updated.id,
         driverName: updated.driverName,
+        routeName: activeRouteRef.current?.routeName || updated.routeName,
         status: updated.status,
         location: { latitude: cleanPoint.latitude, longitude: cleanPoint.longitude },
         heading: previous && distM > 5 ? bearingDegrees(previous, cleanPoint) : 0,

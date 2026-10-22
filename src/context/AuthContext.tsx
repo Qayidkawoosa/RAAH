@@ -3,6 +3,7 @@ import { authService } from '../services/auth';
 import { UserProfile, UserRole } from '../types/auth';
 import { backgroundDmsService } from '../services/dms/backgroundDmsService';
 import { dmsEngine } from '../services/dms/dmsEngine';
+import { realtimeService } from '../services/realtime';
 
 interface AuthContextType {
   user: UserProfile | null;
@@ -97,6 +98,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       dmsEngine.setTrackingActive(false);
       dmsEngine.reset();
+
+      if (user?.role === 'driver') {
+        const busNo = user.vehicleNo || (user as any).assignedBusNo || (user as any).assignedBus;
+        if (busNo) {
+          realtimeService.publishDriverOffline({
+            busNo,
+            timestamp: Date.now(),
+          });
+        }
+      }
 
       await authService.logout();
       setUser(null);
