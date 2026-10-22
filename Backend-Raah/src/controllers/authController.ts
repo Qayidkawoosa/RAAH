@@ -235,28 +235,50 @@ export async function register(req: Request, res: Response): Promise<void> {
  */
 export async function login(req: Request, res: Response): Promise<void> {
   try {
-    const { email, password } = req.body;
+    const rawIdentifier = String(req.body.email || req.body.phone || req.body.identifier || '').trim();
+    const { password } = req.body;
 
-    if (!email || !password) {
+    if (!rawIdentifier || !password) {
       res.status(400).json({
         error: 'BadRequest',
-        message: 'email and password are required',
+        message: 'Phone number/email and password are required',
       });
       return;
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedEmail = rawIdentifier.toLowerCase();
+    const cleanPhone = rawIdentifier.replace(/[^0-9]/g, '');
 
-    // 1. Query REAL PostgreSQL Database
-    const user = await prisma.user.findUnique({
-      where: { email: normalizedEmail },
-      include: { school: true, assignedBus: true },
-    });
+    // 1. Query REAL PostgreSQL Database: search by phone number OR email
+    let user = null;
+
+    if (cleanPhone.length >= 7) {
+      user = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { phone: rawIdentifier },
+            { phone: cleanPhone },
+            { phone: `+91${cleanPhone.slice(-10)}` },
+            { phone: cleanPhone.slice(-10) },
+          ],
+        },
+        include: { school: true, assignedBus: true },
+      });
+    }
+
+    if (!user) {
+      user = await prisma.user.findFirst({
+        where: {
+          email: { equals: normalizedEmail, mode: 'insensitive' },
+        },
+        include: { school: true, assignedBus: true },
+      });
+    }
 
     if (!user) {
       res.status(401).json({
         error: 'Unauthorized',
-        message: 'Invalid email or password',
+        message: 'Invalid phone/email or password',
       });
       return;
     }

@@ -437,6 +437,92 @@ export async function enrollDriver(req: Request, res: Response): Promise<void> {
 }
 
 /**
+ * DELETE /api/fleet/:busNo
+ * Deletes driver user and bus from PostgreSQL database and removes from live fleet
+ */
+export async function deleteFleetBus(req: Request, res: Response): Promise<void> {
+  try {
+    const rawBusNo = req.params.busNo || req.body?.busNo;
+    if (!rawBusNo) {
+      res.status(400).json({ error: 'BadRequest', message: 'busNo is required' });
+      return;
+    }
+    const busNo = String(rawBusNo).trim().toUpperCase();
+
+    // 1. In a PostgreSQL transaction, delete driver user and bus
+    await prisma.$transaction(async (tx) => {
+      // Find the bus
+      const existingBus = await tx.bus.findFirst({
+        where: { busNo: { equals: busNo, mode: 'insensitive' } },
+        include: { driver: true, trips: true },
+      });
+
+      if (existingBus) {
+        // Delete DMS incidents linked to this bus's trips
+        const tripIds = existingBus.trips.map((t) => t.id);
+        if (tripIds.length > 0) {
+          await tx.dmsIncident.deleteMany({
+            where: { tripId: { in: tripIds } },
+          });
+          await tx.trip.deleteMany({
+            where: { id: { in: tripIds } },
+          });
+        }
+
+        // Unlink students assigned to this bus
+        await tx.student.updateMany({
+          where: { busId: existingBus.id },
+          data: { busId: null },
+        });
+
+        // Delete driver user(s) assigned to this bus
+        await tx.user.deleteMany({
+          where: {
+            OR: [
+              { assignedBusNo: { equals: busNo, mode: 'insensitive' } },
+              { id: { in: existingBus.driver.map((d) => d.id) } },
+            ],
+            role: 'DRIVER',
+          },
+        });
+
+        // Delete the bus itself
+        await tx.bus.delete({
+          where: { id: existingBus.id },
+        });
+      } else {
+        // Even if bus not found in bus table, delete any driver assigned to this bus number
+        await tx.user.deleteMany({
+          where: {
+            assignedBusNo: { equals: busNo, mode: 'insensitive' },
+            role: 'DRIVER',
+          },
+        });
+      }
+    });
+
+    // 2. Remove from live fleet registry
+    fleetBuses.delete(busNo);
+
+    console.log(`🗑️ [Fleet Delete] Deleted Bus ${busNo} and driver from PostgreSQL.`);
+
+    res.status(200).json({
+      status: 'success',
+      message: `Bus ${busNo} and driver deleted successfully from database.`,
+      busNo,
+    });
+  } catch (error: any) {
+    console.error('deleteFleetBus error:', error);
+    res.status(500).json({
+      error: 'InternalServerError',
+      message: 'Failed to delete driver and bus from database',
+      details: error.message,
+    });
+  }
+}
+
+
+/**
  * GET /api/fleet/routes
  * Returns all school routes with their waypoint stops.
  * Seeds standard Srinagar school routes if DB has no routes yet.

@@ -93,14 +93,44 @@ async function runEnrollDriverTests() {
     assert(loginData.token !== undefined, 'JWT token returned on login');
     assert(loginData.user?.assignedBus === testBusNo, 'Logged in driver has assignedBus');
 
-    // 5. Test GET /api/fleet/driver-route
-    console.log('\n--- 5. Testing GET /api/fleet/driver-route ---');
+    // 5. Test driver login with PHONE NUMBER & password
+    console.log('\n--- 5. Testing Number-Based Driver Login (Phone Number) ---');
+    const phoneLoginRes = await fetch(`${baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone: testPhone,
+        password: testPassword,
+      }),
+    });
+    const phoneLoginData = await phoneLoginRes.json();
+    assert(phoneLoginRes.status === 200, 'Driver login succeeds using 10-digit PHONE NUMBER');
+    assert(phoneLoginData.token !== undefined, 'JWT token returned on phone login');
+    assert(phoneLoginData.user?.role === 'driver', 'Role is driver on phone login');
+
+    // 6. Test GET /api/fleet/driver-route
+    console.log('\n--- 6. Testing GET /api/fleet/driver-route ---');
     const driverRouteRes = await fetch(`${baseUrl}/fleet/driver-route?busNo=${testBusNo}`);
     const driverRouteData = await driverRouteRes.json();
     assert(driverRouteRes.status === 200, 'GET /api/fleet/driver-route returns 200');
     assert(driverRouteData.routeId === selectedRoute.id, 'driver-route returns assigned routeId');
     assert(driverRouteData.route?.name === selectedRoute.name, 'driver-route returns assigned route name');
     assert(Array.isArray(driverRouteData.path), 'driver-route returns path coordinates array');
+
+    // 7. Test DELETE /api/fleet/:busNo (Deletes driver and bus from DB)
+    console.log('\n--- 7. Testing DELETE /api/fleet/:busNo ---');
+    const deleteRes = await fetch(`${baseUrl}/fleet/${testBusNo}`, {
+      method: 'DELETE',
+    });
+    const deleteData = await deleteRes.json();
+    assert(deleteRes.status === 200, 'DELETE /api/fleet/:busNo returns 200 OK');
+    assert(deleteData.status === 'success', 'Response status is "success"');
+
+    // Verify driver and bus were removed from DB
+    const busCheck = await prisma.bus.findUnique({ where: { busNo: testBusNo } });
+    assert(busCheck === null, 'Bus deleted from PostgreSQL');
+    const driverCheck = await prisma.user.findFirst({ where: { assignedBusNo: testBusNo } });
+    assert(driverCheck === null, 'Assigned driver user deleted from PostgreSQL');
 
     console.log(`\n========================================================`);
     console.log(`📊 TEST RESULTS: ${passed}/${total} PASSED`);

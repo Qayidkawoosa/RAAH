@@ -124,12 +124,31 @@ export const tripService = {
     password: string;
     schoolId?: string;
   }): Promise<{ status: string; driverEmail: string; busNo: string; routeId: string }> {
+    const matchedRoute = ALL_ROUTES.find((r) => r.id === payload.routeId) || ALL_ROUTES[0];
+    const routeName = matchedRoute?.routeName || 'Assigned Planned Route';
+
     return liveOrDemo(
       async () => {
         const res = await apiClient.post<{ status: string; driverEmail: string; busNo: string; routeId: string }>(
           '/api/fleet/enroll-driver',
           payload
         );
+        // Also cache locally for offline demo resilience
+        const driverEmail = res.data.driverEmail;
+        const mockDriver = {
+          uid: `driver_${payload.phone}`,
+          email: driverEmail,
+          name: payload.driverName,
+          phone: payload.phone,
+          role: 'driver' as const,
+          vehicleNo: payload.busNo,
+          assignedBusNo: payload.busNo,
+          schoolName: 'Kashmir Valley School',
+        };
+        const usersRaw = await AsyncStorage.getItem('@raasta_mock_users');
+        const users = usersRaw ? JSON.parse(usersRaw) : [];
+        await AsyncStorage.setItem('@raasta_mock_users', JSON.stringify([...users.filter((u: any) => u.phone !== payload.phone && u.email !== driverEmail), mockDriver]));
+
         return res.data;
       },
       async () => {
@@ -137,14 +156,30 @@ export const tripService = {
         const newBus: FleetBus = {
           busNo: payload.busNo,
           driverName: payload.driverName,
-          routeName: payload.routeId,
+          routeName: routeName,
           status: 'idle',
           studentsOnBoard: 0,
           safetyScore: 100,
         };
         const stored = await readJson<FleetBus[]>(FLEET_KEY, demoFleet);
-        const updated = [...stored, newBus];
+        const updated = [...stored.filter((b) => b.busNo !== payload.busNo), newBus];
         await AsyncStorage.setItem(FLEET_KEY, JSON.stringify(updated));
+
+        // Save mock driver user with phone number for phone-based login
+        const mockDriver = {
+          uid: `driver_${payload.phone}`,
+          email: driverEmail,
+          name: payload.driverName,
+          phone: payload.phone,
+          role: 'driver' as const,
+          vehicleNo: payload.busNo,
+          assignedBusNo: payload.busNo,
+          schoolName: 'Kashmir Valley School',
+        };
+        const usersRaw = await AsyncStorage.getItem('@raasta_mock_users');
+        const users = usersRaw ? JSON.parse(usersRaw) : [];
+        await AsyncStorage.setItem('@raasta_mock_users', JSON.stringify([...users.filter((u: any) => u.phone !== payload.phone && u.email !== driverEmail), mockDriver]));
+
         return {
           status: 'success',
           driverEmail,
@@ -159,11 +194,22 @@ export const tripService = {
     return liveOrDemo(
       async () => {
         const res = await apiClient.get<any>('/api/fleet/routes');
-        return res.data?.routes || [];
+        const list = res.data?.routes || [];
+        return list.length > 0 ? list : ALL_ROUTES.map((r, i) => ({
+          id: r.id || `route_${i + 1}`,
+          name: r.routeName,
+          description: `${r.stops.length} stops in Srinagar`,
+          stops: r.stops.map((s, idx) => ({
+            name: s.name,
+            latitude: s.location.latitude,
+            longitude: s.location.longitude,
+            stopOrder: idx + 1,
+          })),
+        }));
       },
       async () => {
         return ALL_ROUTES.map((r, i) => ({
-          id: `route_${i + 1}`,
+          id: r.id || `route_${i + 1}`,
           name: r.routeName,
           description: `${r.stops.length} stops in Srinagar`,
           stops: r.stops.map((s, idx) => ({
@@ -209,12 +255,30 @@ export const tripService = {
   async removeFleetBus(busNo: string): Promise<void> {
     await liveOrDemo(
       async () => {
-        await apiClient.delete(`/api/fleet/${busNo}`);
+        await apiClient.delete(`/api/fleet/${encodeURIComponent(busNo)}`);
+        // Clean local cache as well
+        const stored = await readJson<FleetBus[]>(FLEET_KEY, demoFleet);
+        const updated = stored.filter((b) => b.busNo.toUpperCase() !== busNo.toUpperCase());
+        await AsyncStorage.setItem(FLEET_KEY, JSON.stringify(updated));
+
+        const usersRaw = await AsyncStorage.getItem('@raasta_mock_users');
+        if (usersRaw) {
+          const users = JSON.parse(usersRaw);
+          const filteredUsers = users.filter((u: any) => u.assignedBusNo?.toUpperCase() !== busNo.toUpperCase() && u.vehicleNo?.toUpperCase() !== busNo.toUpperCase());
+          await AsyncStorage.setItem('@raasta_mock_users', JSON.stringify(filteredUsers));
+        }
       },
       async () => {
         const stored = await readJson<FleetBus[]>(FLEET_KEY, demoFleet);
-        const updated = stored.filter(b => b.busNo !== busNo);
+        const updated = stored.filter((b) => b.busNo.toUpperCase() !== busNo.toUpperCase());
         await AsyncStorage.setItem(FLEET_KEY, JSON.stringify(updated));
+
+        const usersRaw = await AsyncStorage.getItem('@raasta_mock_users');
+        if (usersRaw) {
+          const users = JSON.parse(usersRaw);
+          const filteredUsers = users.filter((u: any) => u.assignedBusNo?.toUpperCase() !== busNo.toUpperCase() && u.vehicleNo?.toUpperCase() !== busNo.toUpperCase());
+          await AsyncStorage.setItem('@raasta_mock_users', JSON.stringify(filteredUsers));
+        }
       }
     );
   },

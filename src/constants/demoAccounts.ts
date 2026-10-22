@@ -37,9 +37,19 @@ export const DEMO_PROFILES: Record<string, Omit<UserProfile, 'uid' | 'createdAt'
   },
 };
 
-/** Build a full profile for a known demo email, or null if not a demo account. */
-export const demoProfileFor = (email: string, uid: string): UserProfile | null => {
-  const base = DEMO_PROFILES[email.toLowerCase().trim()];
+/** Build a full profile for a known demo email or phone number, or null if not a demo account. */
+export const demoProfileFor = (identifier: string, uid: string): UserProfile | null => {
+  const clean = identifier.toLowerCase().trim();
+  const cleanPhone = clean.replace(/[^0-9]/g, '');
+
+  let base = DEMO_PROFILES[clean];
+  if (!base && cleanPhone.length >= 7) {
+    base = Object.values(DEMO_PROFILES).find((p) => {
+      const pPhone = p.phone?.replace(/[^0-9]/g, '') || '';
+      return pPhone.endsWith(cleanPhone.slice(-10)) || cleanPhone.endsWith(pPhone.slice(-10));
+    });
+  }
+
   if (!base) return null;
   return { ...base, uid, createdAt: new Date().toISOString() };
 };

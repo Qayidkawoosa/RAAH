@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { TextInput, ActivityIndicator } from 'react-native-paper';
 import { useAuth } from '../context/AuthContext';
 import { useAppTheme } from '../hooks/useAppTheme';
-import { Mail, Lock, Eye, EyeOff, LogIn, AlertCircle } from 'lucide-react-native';
+import { Mail, Phone, Lock, Eye, EyeOff, LogIn, AlertCircle } from 'lucide-react-native';
 import { BrandMark } from '../components/BrandMark';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { AuthStackParamList } from '../navigation/types';
@@ -39,7 +39,7 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
     setValidationError(null);
 
     if (!email.trim() || !password.trim()) {
-      setValidationError('Please fill in all credentials.');
+      setValidationError('Please fill in your Phone Number/Email and Password.');
       return;
     }
 
@@ -82,7 +82,7 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
           {/* Card Form */}
           <View style={[styles.formCard, { backgroundColor: colors.card }, shadows.md]}>
             <Text style={[styles.formTitle, { color: colors.textPrimary }]}>Welcome back</Text>
-            <Text style={[styles.formSub, { color: colors.textSecondary }]}>Sign in to access your portal</Text>
+            <Text style={[styles.formSub, { color: colors.textSecondary }]}>Sign in with Phone Number or Email</Text>
 
             {/* Error alerts */}
             {(error || validationError) && (
@@ -94,10 +94,10 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
               </View>
             )}
 
-            {/* Email Field */}
+            {/* Phone Number / Email Field */}
             <View style={styles.inputWrapper}>
               <TextInput
-                label="Email Address"
+                label="Phone Number or Email"
                 value={email}
                 onChangeText={(text) => {
                   setEmail(text);
@@ -108,10 +108,20 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
                 activeOutlineColor={colors.primary}
                 textColor={colors.textPrimary}
                 style={[styles.input, { backgroundColor: colors.card }]}
-                keyboardType="email-address"
+                keyboardType="default"
                 autoCapitalize="none"
                 autoCorrect={false}
-                left={<TextInput.Icon icon={() => <Mail size={18} color={colors.textSecondary} />} />}
+                left={
+                  <TextInput.Icon 
+                    icon={() => (
+                      /^[0-9+ -]+$/.test(email.trim()) && email.trim().length > 0 ? (
+                        <Phone size={18} color={colors.primary} />
+                      ) : (
+                        <Mail size={18} color={colors.textSecondary} />
+                      )
+                    )} 
+                  />
+                }
               />
             </View>
 
@@ -194,7 +204,7 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
             </Text>
             <View style={{ flexDirection: 'row', gap: 8, marginBottom: 6 }}>
               <TouchableOpacity
-                onPress={() => login('driver@raah.app', 'password123')}
+                onPress={() => login('9906123456', 'password123')}
                 style={{
                   flex: 1,
                   backgroundColor: colors.primary,
@@ -209,7 +219,7 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
                   🚌 Driver Dashboard
                 </Text>
                 <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 10, marginTop: 2 }}>
-                  driver@raah.app
+                  Phone: 9906123456
                 </Text>
               </TouchableOpacity>
 

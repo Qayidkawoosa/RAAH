@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import {
   getFleetBuses,
   enrollDriver,
+  deleteFleetBus,
   getFleetRoutes,
   getDriverRoute,
 } from '../controllers/tripController';
@@ -28,6 +29,13 @@ router.get('/buses', optionalAuth, getFleetBuses);
  * @desc    Enroll a new driver with bus and route binding in PostgreSQL
  */
 router.post('/enroll-driver', enrollDriver);
+
+/**
+ * @route   DELETE /api/fleet/:busNo
+ * @desc    Delete driver user and bus from database and live fleet
+ */
+router.delete('/:busNo', deleteFleetBus);
+router.delete('/bus/:busNo', deleteFleetBus);
 
 /**
  * @route   GET /api/fleet/routes

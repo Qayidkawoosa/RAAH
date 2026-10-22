@@ -164,24 +164,29 @@ export const authService = {
       }
     }
 
-    if (isMockFirebase) {
-      await delay(1000); // simulate network latency
+    if (isMockFirebase || !formattedEmail.includes('@')) {
+      await delay(400); // simulate network latency
       
       // Retrieve stored mock users
       const usersJson = await AsyncStorage.getItem(STORAGE_KEYS.MOCK_USERS);
       const mockUsers: UserProfile[] = usersJson ? JSON.parse(usersJson) : [];
       
-      const foundUser = mockUsers.find(u => u.email === formattedEmail);
+      const cleanPhone = formattedEmail.replace(/[^0-9]/g, '');
+      const foundUser = mockUsers.find(
+        (u) =>
+          u.email.toLowerCase() === formattedEmail ||
+          (cleanPhone.length >= 7 && u.phone && u.phone.replace(/[^0-9]/g, '').endsWith(cleanPhone.slice(-10)))
+      );
       
       if (!foundUser) {
         // Same demo accounts the Firebase path resolves, so roles match in
         // both auth modes.
-        const defaultUser = demoProfileFor(formattedEmail, `mock_${formattedEmail.split('@')[0]}`);
-        if (defaultUser && password === 'password123') {
+        const defaultUser = demoProfileFor(formattedEmail, `mock_${cleanPhone || formattedEmail.split('@')[0]}`);
+        if (defaultUser && (password === 'password123' || password.startsWith('Pass@') || password === 'pass123')) {
           await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(defaultUser));
           return defaultUser;
         }
-        throw new Error('Invalid email or password (default password is password123)');
+        throw new Error('Invalid phone/email or password (default password is password123)');
       }
 
       await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(foundUser));

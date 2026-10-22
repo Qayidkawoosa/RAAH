@@ -42,6 +42,7 @@ export const DEMO_REGION = {
 // --- Multi-Route Generation and Definitions ---
 
 export interface RouteConfig {
+  id?: string;
   busNo: string;
   driverName: string;
   routeName: string;
