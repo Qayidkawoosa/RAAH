@@ -59,6 +59,7 @@ class BackgroundDmsService {
   private driverEngine: any = null;
   private phoneEngine: any = null;
   private safetyEngine: any = null;
+  private lastProcessingTime: number = 0;
   private lastPhoneCheckTime: number = 0;
   private latestPhoneState: any = null;
   private latestHandsRes: any[] = [];
@@ -342,14 +343,16 @@ class BackgroundDmsService {
     // Always schedule next frame first to guarantee the loop survives any frame exception
     this.animFrameId = requestAnimationFrame(this.runWebFrameLoop);
 
+    const now = Date.now();
+    if (now - this.lastProcessingTime < 200) return;
+    this.lastProcessingTime = now;
+
     const video = this.hiddenVideoElement;
     if (!video || video.readyState < 2 || !this.visionModels?.faceLandmarker) {
       return;
     }
 
     try {
-      const rawNow = performance.now();
-      const now = Math.max(this.lastWebFrameTimestamp + 1, Math.round(rawNow));
       this.lastWebFrameTimestamp = now;
 
       // 1. High-frequency face landmarks & head orientation

@@ -45,6 +45,7 @@ interface TripContextType {
   triggerSos: () => void;
   notifyParentOfPickup: (customMessage?: string) => void;
   setSimulationRoute: (routePath: LatLng[]) => void;
+  setActiveRouteConfig: (config: RouteConfig) => void;
 }
 
 const TripContext = createContext<TripContextType | undefined>(undefined);
@@ -233,10 +234,18 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
     async (profile: UserProfile, routePath: LatLng[] = simulationRoutePath): Promise<void> => {
       const startedAt = Date.now();
 
-      // Look up selected route configuration by path coordinates or vehicle number
-      const routeConfig = ALL_ROUTES.find((r) => r.path === routePath) ??
-                          ALL_ROUTES.find((r) => r.busNo === profile.vehicleNo) ??
-                          ALL_ROUTES[0];
+      // Look up selected route configuration by path coordinates or vehicle number or activeRouteRef
+      let routeConfig = ALL_ROUTES.find((r) => r.path === routePath) ??
+                        ALL_ROUTES.find((r) => r.busNo === profile.vehicleNo);
+      if (!routeConfig) {
+        routeConfig = {
+          busNo: profile.vehicleNo || profile.assignedBusNo || 'JK-01-A-1234',
+          driverName: profile.name,
+          routeName: activeRouteRef.current?.routeName || 'Assigned Planned Route',
+          path: routePath,
+          stops: activeRouteRef.current?.stops?.length ? activeRouteRef.current.stops : ALL_ROUTES[0].stops,
+        };
+      }
       activeRouteRef.current = routeConfig;
 
       // Load students
@@ -285,25 +294,6 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setTrip(newTrip);
       setLiveScore(100);
 
-      // Immediately get initial location and emit online state to Admin
-      const initialLocation = await locationService.getCurrentLocation();
-      if (initialLocation) {
-        handlePoint(initialLocation);
-        realtimeService.publishDriverState({
-          busNo: busNumber,
-          tripId: newTrip.id,
-          driverName: profile.name,
-          status: 'active',
-          location: { latitude: initialLocation.latitude, longitude: initialLocation.longitude },
-          heading: 0,
-          speedKmh: 0,
-          etaMinutes: 10,
-          nextStop: routeConfig.stops[0]?.name || 'En route',
-          updatedAt: Date.now(),
-        });
-      }
-      // If GPS not yet available, the first watchPosition tick will publish the real location.
-
       // Initialize DMS Engine for active trip
       if (profile.role === 'driver') {
         dmsEngine.tripId = newTrip.id;
@@ -312,7 +302,8 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
         dmsEngine.setTrackingActive(true);
       }
 
-      // Enforce 100% Real Device GPS: ALWAYS acquire real satellite/browser GPS
+      // Enforce 100% Real Device GPS: Start watchPosition IMMEDIATELY so GPS tracking
+      // runs completely uninhibited, broadcasting GPS ticks smoothly to Socket.IO every second.
       setIsSimulatedGps(false);
       try {
         await locationService.requestPermission();
@@ -320,6 +311,13 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } catch (err) {
         console.warn('Real GPS watching error:', err);
       }
+
+      // Retrieve initial location asynchronously without blocking the watchPosition stream
+      locationService.getCurrentLocation().then((initialLocation) => {
+        if (initialLocation && tripRef.current) {
+          handlePoint(initialLocation);
+        }
+      }).catch((e) => console.warn('Initial GPS fix error:', e));
     },
     [handlePoint, simulationRoutePath]
   );
@@ -396,6 +394,14 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
     []
   );
 
+  const setActiveRouteConfig = useCallback(
+    (config: RouteConfig) => {
+      activeRouteRef.current = config;
+      setSimulationRoutePath(config.path);
+    },
+    []
+  );
+
   return (
     <TripContext.Provider
       value={{
@@ -412,6 +418,7 @@ export const TripProvider: React.FC<{ children: React.ReactNode }> = ({ children
         triggerSos,
         notifyParentOfPickup,
         setSimulationRoute,
+        setActiveRouteConfig,
       }}
     >
       {children}

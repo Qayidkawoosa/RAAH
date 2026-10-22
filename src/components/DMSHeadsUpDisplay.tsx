@@ -53,21 +53,20 @@ export const DMSHeadsUpDisplay: React.FC<DMSHeadsUpDisplayProps> = ({ busId, dri
 
   const [showCockpit, setShowCockpit] = useState(false);
 
-  // Auto-start background DMS monitoring ONLY when trip is active
+  // Background DMS monitoring: only starts when explicitly enabled by driver via HUD toggle
+  // Prevents CPU locking and keeps mobile web GPS tracking lightweight and uninhibited
   useEffect(() => {
-    if (isTripActive) {
-      if (!isDmsActive && !isDmsConnecting) {
-        startBackgroundDms();
-      }
-    } else {
+    if (!isTripActive) {
       if (isDmsActive || isDmsConnecting) {
         stopBackgroundDms();
       }
     }
     return () => {
-      stopBackgroundDms();
+      if (!isTripActive) {
+        stopBackgroundDms();
+      }
     };
-  }, [isTripActive]);
+  }, [isTripActive, isDmsActive, isDmsConnecting, stopBackgroundDms]);
 
   // Close live cockpit modal if trip is completed or inactive
   useEffect(() => {
@@ -236,7 +235,7 @@ export const DMSHeadsUpDisplay: React.FC<DMSHeadsUpDisplayProps> = ({ busId, dri
                     : 'Real-time background vision active (0 video streamed)'
                   : isDmsConnecting
                   ? 'Connecting hardware & models...'
-                  : 'DMS Paused'}
+                  : 'DMS Standby · Tap Start to Enable Camera AI'}
               </Text>
             </View>
           </View>

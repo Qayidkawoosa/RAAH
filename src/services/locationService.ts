@@ -65,32 +65,47 @@ export const locationService = {
     onPoint: (point: TripPoint) => void
   ): Promise<LocationUnsubscribe> {
     if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      let lastTickTime = 0;
+      const deliverFix = (pos: GeolocationPosition) => {
+        lastTickTime = Date.now();
+        onPoint({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          timestamp: pos.timestamp || Date.now(),
+          speedKmh: Math.max(0, (pos.coords.speed ?? 0) * 3.6),
+        });
+      };
+
       const watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          console.log('📍 [Phone GPS Tick]', pos.coords.latitude, pos.coords.longitude, pos.coords.speed);
-          onPoint({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            timestamp: pos.timestamp,
-            speedKmh: Math.max(0, (pos.coords.speed ?? 0) * 3.6),
-          });
-        },
+        deliverFix,
         (err) => {
-          if (err.code === 1) {
-            alert('Please allow location access in your browser settings to track this bus.');
-          }
-          console.warn('Browser GPS error:', err);
+          console.warn('Browser GPS watch warning:', err);
         },
-        { enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 }
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 1000 }
       );
-      return () => navigator.geolocation.clearWatch(watchId);
+
+      // Periodic 1-second check to guarantee smooth 1 Hz tick broadcast even when device is stationary
+      const intervalId = setInterval(() => {
+        if (Date.now() - lastTickTime >= 1000) {
+          navigator.geolocation.getCurrentPosition(
+            deliverFix,
+            () => {},
+            { enableHighAccuracy: true, timeout: 3000, maximumAge: 1000 }
+          );
+        }
+      }, 1000);
+
+      return () => {
+        navigator.geolocation.clearWatch(watchId);
+        clearInterval(intervalId);
+      };
     }
 
     const subscription = await Location.watchPositionAsync(
       {
         accuracy: Location.Accuracy.BestForNavigation,
-        timeInterval: 2000,
-        distanceInterval: 5,
+        timeInterval: 1000,
+        distanceInterval: 1,
       },
       (location) => {
         onPoint({

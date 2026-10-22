@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { TextInput, ActivityIndicator } from 'react-native-paper';
 import { useAuth } from '../context/AuthContext';
 import { useAppTheme } from '../hooks/useAppTheme';
-import { Mail, Lock, User, Phone, AlertCircle, KeyRound } from 'lucide-react-native';
+import { Mail, Lock, User, Phone, AlertCircle, KeyRound, Info } from 'lucide-react-native';
 import { BrandMark } from '../components/BrandMark';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { AuthStackParamList } from '../navigation/types';
@@ -55,7 +55,7 @@ const SignupScreen: React.FC<Props> = ({ navigation }) => {
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
-  const [role, setRole] = useState<UserRole>('driver');
+  const [role, setRole] = useState<UserRole>('parent');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -323,7 +323,7 @@ const SignupScreen: React.FC<Props> = ({ navigation }) => {
           {/* Role Selection Container */}
           <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>SELECT YOUR PORTAL ROLE</Text>
           <View style={styles.roleContainer}>
-            {(['driver', 'parent', 'school', 'rto'] as UserRole[]).map((r) => {
+            {(['parent', 'school', 'rto'] as UserRole[]).map((r) => {
               const active = role === r;
               return (
                 <TouchableOpacity
@@ -351,6 +351,14 @@ const SignupScreen: React.FC<Props> = ({ navigation }) => {
                 </TouchableOpacity>
               );
             })}
+          </View>
+
+          {/* Admin Credentials Notice for Drivers */}
+          <View style={[styles.driverNoticeCard, { backgroundColor: `${colors.primary}12`, borderColor: `${colors.primary}33` }]}>
+            <Info size={16} color={colors.primary} style={{ marginRight: 8, marginTop: 1 }} />
+            <Text style={[typography.caption, { color: colors.textSecondary, flex: 1 }]}>
+              Drivers and staff credentials are issued by the school administration.
+            </Text>
           </View>
 
           {/* Form */}
@@ -526,21 +534,28 @@ const styles = StyleSheet.create({
   },
   roleContainer: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     justifyContent: 'space-between',
-    marginBottom: 20,
+    marginBottom: 12,
+    gap: 8,
   },
   roleCard: {
-    width: '48%',
+    flex: 1,
     height: 48,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 10,
   },
   roleCardText: {
     fontSize: 11,
     letterSpacing: 0.8,
+  },
+  driverNoticeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 20,
   },
   formCard: {
     borderRadius: 24,
