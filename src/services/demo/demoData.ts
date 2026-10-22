@@ -19,21 +19,9 @@ import { createId } from '../../utils/id';
 
 const DAY_MS = 86_400_000;
 
-export const demoFleet: FleetBus[] = [
-  { busNo: DEMO_BUS_NO, driverName: DEMO_DRIVER_NAME, routeName: DEMO_ROUTE_NAME, status: 'active', studentsOnBoard: 32, safetyScore: 92 },
-  { busNo: 'JK-01-B-4472', driverName: 'Bashir Ahmad', routeName: 'Rajbagh → Kashmir Valley School', status: 'active', studentsOnBoard: 28, safetyScore: 88 },
-  { busNo: 'JK-01-C-8810', driverName: 'Mohd. Yousuf', routeName: 'Bemina → Kashmir Valley School', status: 'idle', studentsOnBoard: 0, safetyScore: 95 },
-  { busNo: 'JK-01-D-2296', driverName: 'Farooq Lone', routeName: 'Soura → Kashmir Valley School', status: 'active', studentsOnBoard: 35, safetyScore: 71 },
-  { busNo: 'JK-01-E-6634', driverName: 'Abdul Majid', routeName: 'HMT → Kashmir Valley School', status: 'idle', studentsOnBoard: 0, safetyScore: 84 },
-];
+export const demoFleet: FleetBus[] = [];
 
-export const demoRankings: DriverRanking[] = [
-  { driverId: 'drv_yousuf', driverName: 'Mohd. Yousuf', busNo: 'JK-01-C-8810', safetyScore: 95, tripsCompleted: 148, violations: 1, trend: 'up' },
-  { driverId: 'drv_jehangir', driverName: DEMO_DRIVER_NAME, busNo: DEMO_BUS_NO, safetyScore: 92, tripsCompleted: 132, violations: 3, trend: 'up' },
-  { driverId: 'drv_bashir', driverName: 'Bashir Ahmad', busNo: 'JK-01-B-4472', safetyScore: 88, tripsCompleted: 126, violations: 4, trend: 'flat' },
-  { driverId: 'drv_majid', driverName: 'Abdul Majid', busNo: 'JK-01-E-6634', safetyScore: 84, tripsCompleted: 117, violations: 6, trend: 'down' },
-  { driverId: 'drv_farooq', driverName: 'Farooq Lone', busNo: 'JK-01-D-2296', safetyScore: 71, tripsCompleted: 121, violations: 12, trend: 'down' },
-];
+export const demoRankings: DriverRanking[] = [];
 
 export const demoComplaints: Complaint[] = [
   {
@@ -62,13 +50,7 @@ export const demoComplaints: Complaint[] = [
   },
 ];
 
-export const demoCompliance: ComplianceRecord[] = [
-  { busNo: DEMO_BUS_NO, schoolName: 'Kashmir Valley School', routeName: DEMO_ROUTE_NAME, insuranceValidTill: '30 Nov 2026', lastInspection: '02 Jun 2026', isCompliant: true },
-  { busNo: 'JK-01-B-4472', schoolName: 'Kashmir Valley School', routeName: 'Rajbagh → Kashmir Valley School', insuranceValidTill: '15 Oct 2026', lastInspection: '14 May 2026', isCompliant: true },
-  { busNo: 'JK-01-C-8810', schoolName: 'Kashmir Valley School', routeName: 'Bemina → Kashmir Valley School', insuranceValidTill: '09 Dec 2026', lastInspection: '21 Jun 2026', isCompliant: true },
-  { busNo: 'JK-01-D-2296', schoolName: 'Kashmir Valley School', routeName: 'Soura → Kashmir Valley School', insuranceValidTill: '28 Feb 2027', lastInspection: '03 Feb 2026', isCompliant: false },
-  { busNo: 'JK-01-E-6634', schoolName: 'Green Meadows School', routeName: 'HMT → Green Meadows School', insuranceValidTill: '07 Jan 2027', lastInspection: '11 Apr 2026', isCompliant: true },
-];
+export const demoCompliance: ComplianceRecord[] = [];
 
 export const demoStudents: Student[] = [
   { id: 'stu_1', name: 'Ayaan Bhat', className: 'Class 5-A', busNo: DEMO_BUS_NO, parentName: 'Amina Shah', pickupStop: 'Lal Chowk' },

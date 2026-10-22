@@ -1,0 +1,213 @@
+// Prisma Schema for Raasta Kashmir (Safe School Bus & DMS Platform)
+// Database Engine: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// -------------------------------------------------------------
+// ENUMS: Role-Based Access Control & Safety Incident Classifications
+// -------------------------------------------------------------
+
+enum UserRole {
+  DRIVER
+  PARENT
+  SCHOOL_ADMIN
+  RTO
+}
+
+enum TripStatus {
+  SCHEDULED
+  ACTIVE
+  COMPLETED
+  SOS_ALERT
+  DELAYED
+}
+
+enum DmsViolationType {
+  DROWSINESS         // Microsleep: Eye closure > 1.5s
+  PHONE_DISTRACTION  // Calling at ear or texting
+  NO_SEATBELT        // Missing shoulder sash over chest
+  HEAD_POSE          // Looking away from road > 2.5s
+  FATIGUE_YAWN       // Prolonged mouth aperture
+}
+
+enum IncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+// -------------------------------------------------------------
+// 1. SCHOOLS (Multi-Tenant Root)
+// -------------------------------------------------------------
+
+model School {
+  id           String    @id @default(cuid())
+  name         String    @unique // e.g. "Kashmir Valley School"
+  address      String    // e.g. "Hazratbal, Srinagar"
+  contactEmail String?
+  contactPhone String?
+  createdAt    DateTime  @default(now())
+
+  // Relations
+  buses        Bus[]
+  users        User[]
+  routes       Route[]
+
+  @@map("schools")
+}
+
+// -------------------------------------------------------------
+// 2. USERS & ROLES
+// -------------------------------------------------------------
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  phone        String?
+  role         UserRole  @default(PARENT)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Tenant Relation
+  schoolId     String?
+  school       School?   @relation(fields: [schoolId], references: [id])
+
+  // Role-Specific Relations
+  assignedBusNo String?
+  assignedBus   Bus?      @relation("DriverBus", fields: [assignedBusNo], references: [busNo])
+  students      Student[] @relation("ParentStudents")
+  trips         Trip[]    @relation("DriverTrips")
+
+  @@map("users")
+}
+
+// -------------------------------------------------------------
+// 3. FLEET & BUSES
+// -------------------------------------------------------------
+
+model Bus {
+  id                 String     @id @default(cuid())
+  busNo              String     @unique // e.g. "JK-01-A-1234"
+  capacity           Int        @default(32)
+  registrationStatus String     @default("Compliant")
+  createdAt          DateTime   @default(now())
+
+  // Tenant Relation
+  schoolId           String
+  school             School     @relation(fields: [schoolId], references: [id])
+
+  // Operational Relations
+  driver             User[]     @relation("DriverBus")
+  students           Student[]
+  trips              Trip[]
+  routeId            String?
+  route              Route?     @relation(fields: [routeId], references: [id])
+
+  @@map("buses")
+}
+
+// -------------------------------------------------------------
+// 4. ROUTES & STOPS (Srinagar Geography)
+// -------------------------------------------------------------
+
+model Route {
+  id          String      @id @default(cuid())
+  name        String      // e.g. "Lal Chowk to Hazratbal"
+  description String?
+
+  // Tenant Relation
+  schoolId    String
+  school      School      @relation(fields: [schoolId], references: [id])
+
+  // Waypoints
+  buses       Bus[]
+  stops       RouteStop[]
+
+  @@map("routes")
+}
+
+model RouteStop {
+  id         String    @id @default(cuid())
+  name       String    // e.g. "Nishat Stop"
+  latitude   Float
+  longitude  Float
+  stopOrder  Int       // 1, 2, 3...
+  routeId    String
+  route      Route     @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  students   Student[]
+
+  @@map("route_stops")
+}
+
+// -------------------------------------------------------------
+// 5. STUDENTS (Children linked to Parents & Buses)
+// -------------------------------------------------------------
+
+model Student {
+  id          String     @id @default(cuid())
+  name        String     // e.g. "Arman Dar"
+  className   String     // e.g. "Class 5-B"
+  inviteCode  String     @unique // e.g. "STU-101"
+  parentId    String?
+  parent      User?      @relation("ParentStudents", fields: [parentId], references: [id])
+  busId       String?
+  bus         Bus?       @relation(fields: [busId], references: [id])
+  stopId      String?
+  pickupStop  RouteStop? @relation(fields: [stopId], references: [id])
+  status      String     @default("at_home") // "at_home" | "in_transit" | "dropped"
+
+  @@map("students")
+}
+
+// -------------------------------------------------------------
+// 6. TRIPS (Real-Time Journey Lifecycle)
+// -------------------------------------------------------------
+
+model Trip {
+  id          String       @id @default(cuid())
+  busId       String
+  bus         Bus          @relation(fields: [busId], references: [id])
+  driverId    String
+  driver      User         @relation("DriverTrips", fields: [driverId], references: [id])
+  status      TripStatus   @default(SCHEDULED)
+  startedAt   DateTime     @default(now())
+  endedAt     DateTime?
+  distanceKm  Float        @default(0.0)
+  maxSpeedKmh Float        @default(0.0)
+  avgSpeedKmh Float        @default(0.0)
+  safetyScore Int          @default(100)
+
+  // Relations
+  incidents   DmsIncident[]
+
+  @@map("trips")
+}
+
+// -------------------------------------------------------------
+// 7. DMS SAFETY INCIDENTS (AI Vision Audit Log)
+// -------------------------------------------------------------
+
+model DmsIncident {
+  id            String           @id @default(cuid())
+  tripId        String
+  trip          Trip             @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  violationType DmsViolationType
+  severity      IncidentSeverity @default(MEDIUM)
+  confidence    Float            // e.g. 0.94 (94% model confidence)
+  latitude      Float?
+  longitude     Float?
+  speedKmh      Float?
+  snapshotUrl   String?
+  timestamp     DateTime         @default(now())
+
+  @@map("dms_incidents")
+}

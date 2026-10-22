@@ -24,6 +24,16 @@ import { createPhoneDetectorEngine } from './core/interpretation/phoneDetectorEn
 import { createSafetyEventEngine } from './core/events/safetyEventEngine.js';
 // @ts-ignore
 import { SAFETY_EVENT_TYPES, EVENT_SEVERITY } from './core/events/safetyEventTypes.js';
+// @ts-ignore
+import { extractTorsoGeometry } from './core/vision/seatbelt/torsoGeometry.js';
+// @ts-ignore
+import { evaluateHybridFusion } from './core/vision/seatbelt/fusionEngine.js';
+// @ts-ignore
+import { SeatbeltTemporalTracker, SEATBELT_TEMPORAL_STATE } from './core/vision/seatbelt/seatbeltTracker.js';
+// @ts-ignore
+import { createSeatbeltDetectorEngine } from './core/vision/seatbelt/seatbeltDetectorEngine.js';
+// @ts-ignore
+import { detectPose } from './core/vision/detectPose.js';
 
 import { dmsEngine } from './dmsEngine';
 import { SafetyEventType, SafetyEventSeverity } from '../../types/fleet';
@@ -33,6 +43,7 @@ export {
   detectFaceLandmarks,
   detectPhone,
   detectHands,
+  detectPose,
   HAND_CONNECTIONS,
   extractHeadPose,
   extractDriverBlendshapes,
@@ -41,6 +52,11 @@ export {
   createSafetyEventEngine,
   SAFETY_EVENT_TYPES,
   EVENT_SEVERITY,
+  extractTorsoGeometry,
+  evaluateHybridFusion,
+  SeatbeltTemporalTracker,
+  createSeatbeltDetectorEngine,
+  SEATBELT_TEMPORAL_STATE,
 };
 
 export interface VisionSafetyEvent {
@@ -192,15 +208,14 @@ export function initNativeLandmarkBridge(config: NativeDmsBridgeConfig = {}) {
         perclos: fullState.eyes?.perclosScore ? fullState.eyes.perclosScore / 100 : 0.05,
         isMicrosleeping: fullState.eyes?.isMicrosleep,
         isDistracted: fullState.pose?.isDistracted,
-        isYawning: fullState.mouth?.isYawningNow,
-        isUsingPhone: fullState.phone?.isConfirmed,
+        isUsingPhone: Boolean(fullState.phone?.isConfirmed && fullState.phone?.isHandAssociated),
         phoneMode:
-          fullState.phone?.mode === 'CALLING'
+          (fullState.phone?.isHandAssociated && fullState.phone?.mode === 'CALLING')
             ? 'calling'
-            : fullState.phone?.mode === 'TEXTING'
+            : (fullState.phone?.isHandAssociated && fullState.phone?.mode === 'TEXTING')
             ? 'texting'
             : 'none',
-        handsOnWheel: !(fullState.phone?.isConfirmed && fullState.phone?.isHandAssociated),
+        handsOnWheel: !(fullState.phone?.isConfirmed && (fullState.phone?.mode === 'CALLING' || fullState.phone?.isHandAssociated)),
       });
 
       // 4. Evaluate Safety Events

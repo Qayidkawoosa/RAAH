@@ -35,6 +35,22 @@ function getDistanceToBox(pt, box) {
 }
 
 /**
+ * Calculates minimum Euclidean distance from a collection of points to an axis-aligned box.
+ * Returns 0 if any point is inside the box.
+ */
+function getMinDistanceToBox(points, box) {
+  if (!points || !Array.isArray(points) || points.length === 0 || !box) return Infinity;
+  let minD = Infinity;
+  for (const pt of points) {
+    if (!pt) continue;
+    const d = getDistanceToBox(pt, box);
+    if (d < minD) minD = d;
+    if (minD === 0) break;
+  }
+  return minD;
+}
+
+/**
  * Calculates rectangular intersection area between two axis-aligned boxes.
  */
 function getIntersectionArea(boxA, boxB) {
@@ -155,8 +171,18 @@ function calculateFaceGeometry(landmarks, frameWidth, frameHeight) {
     height: Math.max(1, chin.y - eyeBox.originY),
   };
 
-  const leftEar = getPt(234) || { x: minX, y: (minY + maxY) / 2 };
-  const rightEar = getPt(454) || { x: maxX, y: (minY + maxY) / 2 };
+  // Multi-landmark anatomical ear clusters (covering tragus, preauricular, infra-auricular,
+  // helix top, and mandibular angle) on both sides of the face.
+  // Left image side (canonical right): tragus 234, preauricular 127, lobule 132, helix 21/54/162, jaw angle 93/58/172/136
+  const leftEarIndices = [234, 127, 162, 21, 54, 93, 132, 58, 172, 136];
+  // Right image side (canonical left): tragus 454, preauricular 356, lobule 361, helix 251/284/389, jaw angle 323/288/397/365
+  const rightEarIndices = [454, 356, 389, 251, 284, 323, 361, 288, 397, 365];
+
+  const leftEarCluster = leftEarIndices.map(getPt).filter(Boolean);
+  const rightEarCluster = rightEarIndices.map(getPt).filter(Boolean);
+
+  const leftEar = getPt(234) || leftEarCluster[0] || { x: minX, y: (minY + maxY) / 2 };
+  const rightEar = getPt(454) || rightEarCluster[0] || { x: maxX, y: (minY + maxY) / 2 };
   const mouth = getPt(13) || { x: midlineX, y: (minY + maxY) / 2 + rawHeight * 0.25 };
 
   return {
@@ -169,6 +195,8 @@ function calculateFaceGeometry(landmarks, frameWidth, frameHeight) {
     chin,
     leftEar,
     rightEar,
+    leftEarCluster,
+    rightEarCluster,
     mouth,
     noseBridge,
   };
@@ -209,8 +237,20 @@ function evaluatePhoneHandRelationship(phoneBox, hands, frameDimensions, config 
   let nearestHandedness = null;
   let nearestLandmarkPx = null;
   let landmarksInsideBox = 0;
+  let hasHandBoxIntersection = false;
 
   for (const hand of hands) {
+    // Check bounding box intersection between hand and phone
+    if (hand.bbox) {
+      const ix1 = Math.max(phoneBox.originX, hand.bbox.originX);
+      const iy1 = Math.max(phoneBox.originY, hand.bbox.originY);
+      const ix2 = Math.min(phoneBox.originX + phoneBox.width, hand.bbox.originX + hand.bbox.width);
+      const iy2 = Math.min(phoneBox.originY + phoneBox.height, hand.bbox.originY + hand.bbox.height);
+      if (ix2 > ix1 && iy2 > iy1) {
+        hasHandBoxIntersection = true;
+      }
+    }
+
     for (const pt of hand.landmarksPx) {
       const dx = pt.x - phoneCenterPx.x;
       const dy = pt.y - phoneCenterPx.y;
@@ -236,9 +276,13 @@ function evaluatePhoneHandRelationship(phoneBox, hands, frameDimensions, config 
   const minCenterDistNorm = Number((minCenterDistPx / frameDiag).toFixed(3));
 
   let state = HAND_RELATIONSHIP_STATE.NO_HAND_NEARBY;
-  if (landmarksInsideBox >= 2 || minCenterDistNorm <= associationDistThreshold) {
+  // A hand is confirmed associated with the phone if:
+  // 1. One or more hand landmarks are physically inside the phone box
+  // 2. OR the hand bounding box directly overlaps the phone box
+  // 3. OR the hand center/wrist is within close grip distance (associationDistThreshold)
+  if (landmarksInsideBox >= 1 || (hasHandBoxIntersection && minCenterDistNorm <= 0.14) || minCenterDistNorm <= associationDistThreshold) {
     state = HAND_RELATIONSHIP_STATE.PHONE_HAND_ASSOCIATED;
-  } else if (landmarksInsideBox >= 1 || minCenterDistNorm <= proximityDistThreshold) {
+  } else if (minCenterDistNorm <= proximityDistThreshold) {
     state = HAND_RELATIONSHIP_STATE.HAND_NEAR_PHONE;
   }
 
@@ -248,6 +292,7 @@ function evaluatePhoneHandRelationship(phoneBox, hands, frameDimensions, config 
     nearestHandedness,
     minCenterDistNorm,
     landmarksInsideBox,
+    hasHandBoxIntersection,
     phoneCenterPx,
     nearestLandmarkPx,
   };
@@ -255,6 +300,7 @@ function evaluatePhoneHandRelationship(phoneBox, hands, frameDimensions, config 
 
 /**
  * Classifies phone interaction into CALLING, TEXTING, or HOLDING.
+ * Enforces strict hierarchy: PHONE MUST FIRST BE CONFIRMED IN HAND.
  */
 export function evaluatePhoneInteractionMode({
   candidate,
@@ -271,50 +317,102 @@ export function evaluatePhoneInteractionMode({
       modeReason: "No phone candidate",
       isCalling: false,
       isTexting: false,
+      isHandAssociated: false,
       earDistancePx: null,
       activeEar: null,
     };
   }
 
+  // =========================================================================
+  // STEP 1: STRICT VERIFICATION — PHONE MUST BE DETECTED IN HAND
+  // =========================================================================
+  const isHandAssociated = Boolean(
+    handRelationship?.hasHand && (
+      handRelationship.state === HAND_RELATIONSHIP_STATE.PHONE_HAND_ASSOCIATED ||
+      handRelationship.landmarksInsideBox >= 1 ||
+      handRelationship.hasHandBoxIntersection ||
+      (handRelationship.state === HAND_RELATIONSHIP_STATE.HAND_NEAR_PHONE && handRelationship.minCenterDistNorm <= 0.12)
+    )
+  );
+
+  // If phone is NOT held in hand (e.g. mounted in phone cradle, on dashboard, or unheld):
+  // Strictly prevent CALLING, TEXTING, or HOLDING classification!
+  if (!isHandAssociated) {
+    return {
+      mode: PHONE_INTERACTION_MODE.NONE,
+      modeReason: "Phone detected, but not held in hand (in mount or cradle)",
+      isCalling: false,
+      isTexting: false,
+      isHandAssociated: false,
+      earDistancePx: null,
+      activeEar: null,
+    };
+  }
+
+  // =========================================================================
+  // STEP 2: PHONE IS CONFIRMED IN HAND -> NOW CLASSIFY CALLING vs TEXTING vs HOLDING
+  // =========================================================================
   const box = candidate.box;
   const phoneCenterX = box.originX + box.width / 2;
   const phoneCenterY = box.originY + box.height / 2;
 
-  // 1. Evaluate Calling Mode (Phone held to ear, lateral offset, ear-to-jaw height)
+  // 1. Evaluate Calling Mode (Phone held in hand against either ear with raised hand)
   if (faceGeom && faceGeom.hasFace) {
     const faceWidth = Math.max(1, faceGeom.faceBox.width);
     const faceHeight = Math.max(1, faceGeom.faceBox.height);
 
-    const distLeft = getDistanceToBox(faceGeom.leftEar, box);
-    const distRight = getDistanceToBox(faceGeom.rightEar, box);
+    // Multi-point ear cluster distance: checks distance from candidate box to ANY anatomical ear/jaw landmark
+    const distLeft = faceGeom.leftEarCluster && faceGeom.leftEarCluster.length > 0
+      ? getMinDistanceToBox(faceGeom.leftEarCluster, box)
+      : getDistanceToBox(faceGeom.leftEar, box);
+
+    const distRight = faceGeom.rightEarCluster && faceGeom.rightEarCluster.length > 0
+      ? getMinDistanceToBox(faceGeom.rightEarCluster, box)
+      : getDistanceToBox(faceGeom.rightEar, box);
+
     const minEarDist = Math.min(distLeft, distRight);
-    const activeEar = distLeft < distRight ? "LEFT_EAR" : "RIGHT_EAR";
+    // Landmark 234 cluster is image-left; Landmark 454 cluster is image-right.
+    const activeEar = distLeft <= distRight ? "LEFT_EAR" : "RIGHT_EAR";
 
-    // Proximity to ear: within 55% of face width or <= 80px
-    const isCloseToEar = minEarDist <= Math.max(80, faceWidth * 0.55);
+    // Proximity to ear: within 65% of face width or <= 95px (reliable across distances & phone sizes)
+    const isCloseToEar = minEarDist <= Math.max(95, faceWidth * 0.65);
 
-    // Vertically aligned between eye level and lower jaw
-    const isVerticalEarBand =
-      phoneCenterY >= faceGeom.eyeBox.originY - faceHeight * 0.25 &&
-      phoneCenterY <= faceGeom.chin.y + faceHeight * 0.35;
+    // Vertically aligned between temple/eye level and lower jaw/chin
+    const eyeTopY = faceGeom.eyeBox ? faceGeom.eyeBox.originY : (faceGeom.chin.y - faceHeight * 0.75);
+    const chinY = faceGeom.chin?.y || (eyeTopY + faceHeight * 0.75);
 
-    // Laterally displaced from face midline
-    const isLateral = Math.abs(phoneCenterX - faceGeom.midlineX) >= faceWidth * 0.18;
+    const isCenterInBand =
+      phoneCenterY >= eyeTopY - faceHeight * 0.35 &&
+      phoneCenterY <= chinY + faceHeight * 0.45;
+    const isBoxOverlappingEar =
+      box.originY <= chinY + faceHeight * 0.35 &&
+      box.originY + box.height >= eyeTopY - faceHeight * 0.25;
 
-    if (isCloseToEar && isVerticalEarBand && isLateral) {
+    const isVerticalEarBand = isCenterInBand && isBoxOverlappingEar;
+
+    // Laterally displaced from face midline OR directly in contact with the ear region
+    const isLateral =
+      Math.abs(phoneCenterX - faceGeom.midlineX) >= faceWidth * 0.14 ||
+      minEarDist <= Math.max(65, faceWidth * 0.40);
+
+    // Verify holding hand is raised to ear/head level (not down at steering wheel/lap)
+    const handY = handRelationship.nearestLandmarkPx ? handRelationship.nearestLandmarkPx.y : phoneCenterY;
+    const isHandRaisedToEar = handY <= chinY + faceHeight * 0.45;
+
+    if (isCloseToEar && isVerticalEarBand && isLateral && isHandRaisedToEar) {
       return {
         mode: PHONE_INTERACTION_MODE.CALLING,
-        modeReason: `Phone held to ${activeEar === "LEFT_EAR" ? "left" : "right"} ear (${Math.round(minEarDist)}px proximity)`,
+        modeReason: `Driver holding phone to ${activeEar === "LEFT_EAR" ? "left" : "right"} ear (${Math.round(minEarDist)}px proximity)`,
         isCalling: true,
         isTexting: false,
+        isHandAssociated: true,
         earDistancePx: Math.round(minEarDist),
         activeEar,
       };
     }
   }
 
-  // 2. Evaluate Texting / Screen Viewing Mode (Low Phone Position + Downward Head/Gaze Tilt)
-  const isHandAssociated = handRelationship?.state === HAND_RELATIONSHIP_STATE.PHONE_HAND_ASSOCIATED;
+  // 2. Evaluate Texting / Screen Viewing Mode (Hand holding phone low + Downward Head/Gaze Tilt)
   const chinY = faceGeom?.chin?.y || frameHeight * 0.45;
   const mouthY = faceGeom?.mouth?.y || frameHeight * 0.40;
 
@@ -332,34 +430,25 @@ export function evaluatePhoneInteractionMode({
     headPose?.direction === "DOWN_RIGHT" ||
     headPose?.direction === "GAZE_DOWN";
 
-  if (isPhoneLow && (isDownwardPitch || isDownwardGaze) && isHandAssociated) {
+  if (isPhoneLow && (isDownwardPitch || isDownwardGaze)) {
     return {
       mode: PHONE_INTERACTION_MODE.TEXTING,
-      modeReason: `Phone held low with downward head tilt (${pitch.toFixed(1)}°) and gaze off road`,
+      modeReason: `Driver holding phone low with downward head tilt (${pitch.toFixed(1)}°) and gaze off road`,
       isCalling: false,
       isTexting: true,
+      isHandAssociated: true,
       earDistancePx: null,
       activeEar: null,
     };
   }
 
-  // 3. Fallback: In-Hand Holding (Active grip without calling or downward texting posture)
-  if (isHandAssociated) {
-    return {
-      mode: PHONE_INTERACTION_MODE.HOLDING,
-      modeReason: "Driver holding phone in hand (looking ahead)",
-      isCalling: false,
-      isTexting: false,
-      earDistancePx: null,
-      activeEar: null,
-    };
-  }
-
+  // 3. Fallback: Phone in Hand (Active grip looking ahead)
   return {
     mode: PHONE_INTERACTION_MODE.HOLDING,
-    modeReason: "Phone candidate present without confirmed hand grip",
+    modeReason: "Driver holding phone in hand (looking ahead)",
     isCalling: false,
     isTexting: false,
+    isHandAssociated: true,
     earDistancePx: null,
     activeEar: null,
   };
@@ -370,21 +459,24 @@ export function evaluatePhoneInteractionMode({
  *
  * @param {Object} [options]
  * @param {number} [options.confirmationTimeMs=1000] - Duration required to confirm phone (ms)
- * @param {number} [options.dropoutToleranceMs=400] - Duration to bridge single-frame dropouts (ms)
- * @param {number} [options.associationDistThreshold=0.06]
- * @param {number} [options.proximityDistThreshold=0.18]
+ * @param {number} [options.callingConfirmationMs=1000]
+ * @param {number} [options.textingConfirmationMs=1800]
+ * @param {number} [options.holdingConfirmationMs=2200]
+ * @param {number} [options.dropoutToleranceMs=750] - Duration to bridge single-frame dropouts (ms)
+ * @param {number} [options.associationDistThreshold=0.10]
+ * @param {number} [options.proximityDistThreshold=0.22]
  */
 export function createPhoneDetectorEngine(options = {}) {
   const tieredConfirmationMs = {
-    CALLING: options.callingConfirmationMs ?? 1500,
-    TEXTING: options.textingConfirmationMs ?? 2000,
-    HOLDING: options.holdingConfirmationMs ?? 2500,
+    CALLING: options.callingConfirmationMs ?? 1000,
+    TEXTING: options.textingConfirmationMs ?? 1800,
+    HOLDING: options.holdingConfirmationMs ?? 2200,
   };
-  const dropoutToleranceMs = options.dropoutToleranceMs ?? 400;
+  const dropoutToleranceMs = options.dropoutToleranceMs ?? 750;
 
   const handConfig = {
-    associationDistThreshold: options.associationDistThreshold ?? 0.06,
-    proximityDistThreshold: options.proximityDistThreshold ?? 0.18,
+    associationDistThreshold: options.associationDistThreshold ?? 0.10,
+    proximityDistThreshold: options.proximityDistThreshold ?? 0.22,
   };
 
   // Temporal Tracking State
@@ -441,12 +533,22 @@ export function createPhoneDetectorEngine(options = {}) {
 
         if (faceGeom.hasFace && faceGeom.faceBox) {
           const faceWidth = faceGeom.faceBox.width;
-          const isLateralEarArea =
-            phoneCenterX < faceGeom.midlineX - faceWidth * 0.25 ||
-            phoneCenterX > faceGeom.midlineX + faceWidth * 0.25;
+          const distEarL = faceGeom.leftEarCluster?.length
+            ? getMinDistanceToBox(faceGeom.leftEarCluster, box)
+            : getDistanceToBox(faceGeom.leftEar, box);
+          const distEarR = faceGeom.rightEarCluster?.length
+            ? getMinDistanceToBox(faceGeom.rightEarCluster, box)
+            : getDistanceToBox(faceGeom.rightEar, box);
 
-          // Eye / Glasses Region
-          if (faceGeom.eyeBox) {
+          const isLateralEarArea =
+            phoneCenterX < faceGeom.midlineX - faceWidth * 0.20 ||
+            phoneCenterX > faceGeom.midlineX + faceWidth * 0.20 ||
+            distEarL <= Math.max(90, faceWidth * 0.60) ||
+            distEarR <= Math.max(90, faceWidth * 0.60);
+
+          // Eye / Glasses Region: Only reject if NOT in lateral ear calling area!
+          // Glasses sit directly across the eyes centered on the face, not against the ears.
+          if (faceGeom.eyeBox && !isLateralEarArea) {
             const eyeIntersection = getIntersectionArea(box, faceGeom.eyeBox);
             const eyeArea = Math.max(1, faceGeom.eyeBox.width * faceGeom.eyeBox.height);
             const eyeOverlapRatio = Number((eyeIntersection / phoneArea).toFixed(3));
@@ -458,7 +560,7 @@ export function createPhoneDetectorEngine(options = {}) {
               phoneCenterY >= faceGeom.eyeBox.originY &&
               phoneCenterY <= faceGeom.eyeBox.originY + faceGeom.eyeBox.height;
 
-            if (eyeOverlapRatio >= 0.20 || eyeCoveredRatio >= 0.25 || isCenterInEyeBox) {
+            if (eyeOverlapRatio >= 0.25 || eyeCoveredRatio >= 0.30 || isCenterInEyeBox) {
               rejectionReason = PHONE_REJECTION_REASON.FACE_REGION_OVERLAP;
               subReason = "EYE_GLASSES_REGION";
             }
@@ -580,7 +682,14 @@ export function createPhoneDetectorEngine(options = {}) {
         tieredConfirmationMs[effectiveMode] || tieredConfirmationMs.HOLDING;
 
       // 5. Temporal Windowing Tracking with Tiered Grace Period
-      if (primaryCandidate) {
+      // STRICT REQUIREMENT: Only track confirmation if phone is confirmed in hand!
+      const isCandidateInHand = Boolean(
+        primaryCandidate &&
+        isHandAssociated &&
+        effectiveMode !== PHONE_INTERACTION_MODE.NONE
+      );
+
+      if (isCandidateInHand) {
         lastCandidate = primaryCandidate;
 
         if (temporalState === PHONE_TEMPORAL_STATE.IDLE) {
@@ -602,11 +711,11 @@ export function createPhoneDetectorEngine(options = {}) {
           }
         }
       } else {
-        // Candidate absent in current frame
+        // Candidate absent or released from hand
         if (temporalState !== PHONE_TEMPORAL_STATE.IDLE) {
           const timeSinceLastSeen = timestamp - lastSeenMs;
 
-          if (timeSinceLastSeen <= dropoutToleranceMs) {
+          if (timeSinceLastSeen <= dropoutToleranceMs && isHandAssociated) {
             // Gap bridging active
             isDropoutBridged = true;
             activeDurationMs = timestamp - startTimeMs;
@@ -615,7 +724,7 @@ export function createPhoneDetectorEngine(options = {}) {
               isConfirmed = true;
             }
           } else {
-            // Expired: reset tracker
+            // Expired or released: reset tracker
             temporalState = PHONE_TEMPORAL_STATE.IDLE;
             startTimeMs = 0;
             lastSeenMs = 0;
@@ -628,17 +737,19 @@ export function createPhoneDetectorEngine(options = {}) {
 
       return {
         hasPhoneCandidate: !!primaryCandidate,
-        isConfirmed,
+        isConfirmed: isConfirmed && isHandAssociated,
         isHandAssociated,
         isDropoutBridged,
-        state: temporalState,
-        mode: effectiveMode,
-        modeReason: effectiveMode !== PHONE_INTERACTION_MODE.NONE ? modeReason : "No phone candidate",
-        activeEar: lastActiveEar,
-        earDistancePx: lastEarDist,
-        activeDurationMs: Math.round(activeDurationMs),
+        state: isHandAssociated ? temporalState : PHONE_TEMPORAL_STATE.IDLE,
+        mode: isHandAssociated ? effectiveMode : PHONE_INTERACTION_MODE.NONE,
+        modeReason: isHandAssociated
+          ? (effectiveMode !== PHONE_INTERACTION_MODE.NONE ? modeReason : "Driver holding phone")
+          : (primaryCandidate ? "Phone detected, but not held in hand (in mount/cradle)" : "No phone detected"),
+        activeEar: isHandAssociated ? lastActiveEar : null,
+        earDistancePx: isHandAssociated ? lastEarDist : null,
+        activeDurationMs: isHandAssociated ? Math.round(activeDurationMs) : 0,
         targetConfirmationMs,
-        progress: Math.min(1.0, Number((activeDurationMs / targetConfirmationMs).toFixed(2))),
+        progress: isHandAssociated ? Math.min(1.0, Number((activeDurationMs / targetConfirmationMs).toFixed(2))) : 0,
         candidate: primaryCandidate || (isDropoutBridged ? lastCandidate : null),
         handRelationship,
         rejected,

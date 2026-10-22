@@ -11,6 +11,9 @@ const EFFICIENTDET_LITE0_URL =
 const HAND_LANDMARKER_URL =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task";
 
+const POSE_LANDMARKER_URL =
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
+
 let visionModuleCache = null;
 
 async function getTasksVision() {
@@ -27,17 +30,17 @@ async function getTasksVision() {
 }
 
 /**
- * Loads FaceLandmarker, ObjectDetector, and HandLandmarker.
+ * Loads FaceLandmarker, ObjectDetector, HandLandmarker, and PoseLandmarker.
  * Includes automatic GPU-to-CPU delegate fallback so model loading never crashes.
  */
 export async function loadVisionModels(options = {}) {
   const {
     delegate = "GPU",
-    phoneScoreThreshold = 0.30,
+    phoneScoreThreshold = 0.28,
   } = options;
 
   console.log("[DriverAttention] Loading MediaPipe Vision modules...");
-  const { FaceLandmarker, ObjectDetector, HandLandmarker, FilesetResolver } = await getTasksVision();
+  const { FaceLandmarker, ObjectDetector, HandLandmarker, PoseLandmarker, FilesetResolver } = await getTasksVision();
 
   console.log("[DriverAttention] Initializing WASM vision fileset...");
   const fileset = await FilesetResolver.forVisionTasks(WASM_CDN_URL);
@@ -45,6 +48,7 @@ export async function loadVisionModels(options = {}) {
   let faceLandmarker = null;
   let objectDetector = null;
   let handLandmarker = null;
+  let poseLandmarker = null;
 
   // 1. Load FaceLandmarker (High-frequency driver attention & drowsiness)
   try {
@@ -78,9 +82,9 @@ export async function loadVisionModels(options = {}) {
     }
   }
 
-  // 2. Load ObjectDetector & HandLandmarker concurrently with error tolerance
+  // 2. Load ObjectDetector, HandLandmarker & PoseLandmarker concurrently with error tolerance
   try {
-    const [objDet, handLand] = await Promise.allSettled([
+    const [objDet, handLand, poseLand] = await Promise.allSettled([
       ObjectDetector.createFromOptions(fileset, {
         baseOptions: {
           modelAssetPath: EFFICIENTDET_LITE0_URL,
@@ -100,6 +104,17 @@ export async function loadVisionModels(options = {}) {
         minHandPresenceConfidence: 0.3,
         minTrackingConfidence: 0.3,
       }),
+      PoseLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: POSE_LANDMARKER_URL,
+          delegate: "CPU",
+        },
+        runningMode: "VIDEO",
+        numPoses: 1,
+        minPoseDetectionConfidence: 0.35,
+        minPosePresenceConfidence: 0.35,
+        minTrackingConfidence: 0.35,
+      }),
     ]);
 
     if (objDet.status === "fulfilled") {
@@ -108,15 +123,19 @@ export async function loadVisionModels(options = {}) {
     if (handLand.status === "fulfilled") {
       handLandmarker = handLand.value;
     }
+    if (poseLand.status === "fulfilled") {
+      poseLandmarker = poseLand.value;
+    }
   } catch (secondaryErr) {
     console.warn("[DriverAttention] Secondary vision models non-critical error:", secondaryErr);
   }
 
-  console.log("[DriverAttention] Vision models ready. FaceLandmarker active:", Boolean(faceLandmarker));
+  console.log("[DriverAttention] Vision models ready. Face:", Boolean(faceLandmarker), "Pose:", Boolean(poseLandmarker));
 
   return {
     faceLandmarker,
     objectDetector,
     handLandmarker,
+    poseLandmarker,
   };
 }

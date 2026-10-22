@@ -42,7 +42,7 @@ export class SeatbeltTemporalTracker {
    * @returns {Object} Current temporal state and metrics
    */
   update(isDriverPresent, isFrameFastened, confidence, now = performance.now()) {
-    const dt = Math.min(200, Math.max(0, now - this.lastFrameTime));
+    const dt = Math.min(500, Math.max(0, now - this.lastFrameTime));
     this.lastFrameTime = now;
 
     if (!isDriverPresent) {
@@ -121,6 +121,8 @@ export class SeatbeltTemporalTracker {
 
   getTelemetry(now = performance.now()) {
     let progress = 0;
+    const isFastened = this.currentState === SEATBELT_TEMPORAL_STATE.CONFIRMED_FASTENED;
+
     if (this.currentState === SEATBELT_TEMPORAL_STATE.CONFIRMED_FASTENED) {
       progress = 100;
     } else if (this.currentState === SEATBELT_TEMPORAL_STATE.UNFASTENING) {
@@ -134,6 +136,7 @@ export class SeatbeltTemporalTracker {
 
     return {
       state: this.currentState,
+      isFastened,
       progress,
       durationInState,
       blipsSuppressed: this.blipsSuppressed,

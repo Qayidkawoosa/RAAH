@@ -14,6 +14,7 @@ import { demoProfileFor } from '../constants/demoAccounts';
 
 const STORAGE_KEYS = {
   CURRENT_USER: '@raasta_current_user',
+  AUTH_TOKEN: '@raasta_auth_token',
   MOCK_USERS: '@raasta_mock_users',
   PROFILES_BY_UID: '@raasta_profiles_by_uid',
 };
@@ -36,9 +37,56 @@ const friendlyAuthError = (error: unknown): Error => {
   return new Error(messages[code] ?? 'Something went wrong. Please try again.');
 };
 
+/** Map backend user response from PostgreSQL into Raasta UserProfile */
+const mapBackendUserToProfile = (
+  backendUser: any,
+  fallbackEmail: string,
+  fallbackName?: string,
+  fallbackRole?: UserRole,
+  extraDetails: Record<string, string> = {}
+): UserProfile => {
+  const roleRaw = (backendUser?.role || fallbackRole || 'parent').toLowerCase();
+  const role: UserRole =
+    roleRaw === 'school_admin' || roleRaw === 'school'
+      ? 'school'
+      : roleRaw === 'driver'
+      ? 'driver'
+      : roleRaw === 'rto'
+      ? 'rto'
+      : 'parent';
+
+    const busNum =
+      backendUser?.vehicleNo ||
+      backendUser?.assignedBus ||
+      backendUser?.assignedBusNo ||
+      extraDetails.vehicleNo ||
+      extraDetails.assignedBusNo;
+
+    return {
+      uid: backendUser?.id || backendUser?.uid || `user_${Date.now()}`,
+      email: backendUser?.email || fallbackEmail,
+      name: backendUser?.name || fallbackName || 'User',
+      role,
+      phone: backendUser?.phone || extraDetails.phone,
+      createdAt:
+        typeof backendUser?.createdAt === 'string'
+          ? backendUser.createdAt
+          : new Date(backendUser?.createdAt || Date.now()).toISOString(),
+      assignedBusNo: busNum,
+      vehicleNo: busNum,
+      licenseNo: extraDetails.licenseNo,
+    schoolName:
+      backendUser?.school ||
+      backendUser?.schoolName ||
+      extraDetails.schoolName,
+    rtoCode: extraDetails.rtoCode,
+    ...extraDetails,
+  };
+};
+
 /**
  * Firebase Auth only stores email/password — the Raasta profile (role, bus,
- * school…) lives in our backend (MongoDB), with a local cache so login keeps
+ * school…) lives in our backend, with a local cache so login keeps
  * the right role even if the server is unreachable.
  */
 const profileStore = {
@@ -92,6 +140,30 @@ export const authService = {
   async login(email: string, password: string): Promise<UserProfile> {
     const formattedEmail = email.toLowerCase().trim();
 
+    if (isLiveBackend) {
+      try {
+        const response = await apiClient.post('/api/auth/login', {
+          email: formattedEmail,
+          password,
+        });
+
+        if (response.data?.token) {
+          apiClient.setToken(response.data.token);
+          await AsyncStorage.setItem(STORAGE_KEYS.AUTH_TOKEN, response.data.token);
+        }
+
+        const profile = mapBackendUserToProfile(
+          response.data?.user || {},
+          formattedEmail
+        );
+
+        await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(profile));
+        return profile;
+      } catch (err: any) {
+        console.warn('Backend login failed, attempting local fallback:', err?.message);
+      }
+    }
+
     if (isMockFirebase) {
       await delay(1000); // simulate network latency
       
@@ -144,9 +216,40 @@ export const authService = {
     password: string, 
     name: string, 
     role: UserRole, 
-    extraDetails: Record<string, string>
+    extraDetails: Record<string, string> = {}
   ): Promise<UserProfile> {
     const formattedEmail = email.toLowerCase().trim();
+
+    if (isLiveBackend) {
+      try {
+        const response = await apiClient.post('/api/auth/register', {
+          email: formattedEmail,
+          password,
+          name,
+          role: role.toUpperCase(),
+          phone: extraDetails.phone,
+          assignedBusNo: extraDetails.assignedBusNo || extraDetails.vehicleNo,
+        });
+
+        if (response.data?.token) {
+          apiClient.setToken(response.data.token);
+          await AsyncStorage.setItem(STORAGE_KEYS.AUTH_TOKEN, response.data.token);
+        }
+
+        const profile = mapBackendUserToProfile(
+          response.data?.user || {},
+          formattedEmail,
+          name,
+          role,
+          extraDetails
+        );
+
+        await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(profile));
+        return profile;
+      } catch (err) {
+        console.warn('Backend registration failed, falling back to local storage:', err);
+      }
+    }
 
     if (isMockFirebase) {
       await delay(1200);
@@ -166,6 +269,11 @@ export const authService = {
         role,
         phone: extraDetails.phone,
         createdAt: new Date().toISOString(),
+        assignedBusNo: extraDetails.assignedBusNo || extraDetails.vehicleNo,
+        vehicleNo: extraDetails.vehicleNo,
+        licenseNo: extraDetails.licenseNo,
+        schoolName: extraDetails.schoolName,
+        rtoCode: extraDetails.rtoCode,
         ...extraDetails
       };
 
@@ -191,6 +299,11 @@ export const authService = {
         role,
         phone: extraDetails.phone,
         createdAt: new Date().toISOString(),
+        assignedBusNo: extraDetails.assignedBusNo || extraDetails.vehicleNo,
+        vehicleNo: extraDetails.vehicleNo,
+        licenseNo: extraDetails.licenseNo,
+        schoolName: extraDetails.schoolName,
+        rtoCode: extraDetails.rtoCode,
         ...extraDetails
       };
 
@@ -204,10 +317,16 @@ export const authService = {
    * Log out user
    */
   async logout(): Promise<void> {
+    if (apiClient.setToken) {
+      apiClient.setToken(null);
+    }
     if (!isMockFirebase) {
-      await signOut(auth);
+      try {
+        await signOut(auth);
+      } catch {}
     }
     await AsyncStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
+    await AsyncStorage.removeItem(STORAGE_KEYS.AUTH_TOKEN);
   },
 
   /**
@@ -230,6 +349,10 @@ export const authService = {
    */
   async getCachedSession(): Promise<UserProfile | null> {
     try {
+      const token = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
+      if (token && apiClient.setToken) {
+        apiClient.setToken(token);
+      }
       const userJson = await AsyncStorage.getItem(STORAGE_KEYS.CURRENT_USER);
       return userJson ? JSON.parse(userJson) : null;
     } catch {
@@ -237,3 +360,4 @@ export const authService = {
     }
   }
 };
+

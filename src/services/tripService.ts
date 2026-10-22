@@ -24,6 +24,7 @@ import {
   demoViolations,
 } from './demo/demoData';
 import { createId } from '../utils/id';
+import { ALL_ROUTES } from '../constants/demoRoute';
 
 const HISTORY_KEY = '@raasta_trip_history';
 const COMPLAINTS_KEY = '@raasta_complaints';
@@ -83,7 +84,11 @@ export const tripService = {
 
   async getFleet(): Promise<FleetBus[]> {
     return liveOrDemo(
-      async () => (await apiClient.get<FleetBus[]>('/api/fleet')).data,
+      async () => {
+        const res = await apiClient.get<any>('/api/fleet');
+        const list = Array.isArray(res.data) ? res.data : (res.data?.buses || []);
+        return list;
+      },
       async () => {
         const stored = await readJson<FleetBus[]>(FLEET_KEY, demoFleet);
         return stored;
@@ -107,6 +112,96 @@ export const tripService = {
         const updated = [...stored, newBus];
         await AsyncStorage.setItem(FLEET_KEY, JSON.stringify(updated));
         return newBus;
+      }
+    );
+  },
+
+  async enrollDriver(payload: {
+    driverName: string;
+    phone: string;
+    busNo: string;
+    routeId: string;
+    password: string;
+    schoolId?: string;
+  }): Promise<{ status: string; driverEmail: string; busNo: string; routeId: string }> {
+    return liveOrDemo(
+      async () => {
+        const res = await apiClient.post<{ status: string; driverEmail: string; busNo: string; routeId: string }>(
+          '/api/fleet/enroll-driver',
+          payload
+        );
+        return res.data;
+      },
+      async () => {
+        const driverEmail = payload.driverName.toLowerCase().replace(/\s+/g, '') + '@kashmirschool.edu';
+        const newBus: FleetBus = {
+          busNo: payload.busNo,
+          driverName: payload.driverName,
+          routeName: payload.routeId,
+          status: 'idle',
+          studentsOnBoard: 0,
+          safetyScore: 100,
+        };
+        const stored = await readJson<FleetBus[]>(FLEET_KEY, demoFleet);
+        const updated = [...stored, newBus];
+        await AsyncStorage.setItem(FLEET_KEY, JSON.stringify(updated));
+        return {
+          status: 'success',
+          driverEmail,
+          busNo: payload.busNo,
+          routeId: payload.routeId,
+        };
+      }
+    );
+  },
+
+  async getRoutes(): Promise<any[]> {
+    return liveOrDemo(
+      async () => {
+        const res = await apiClient.get<any>('/api/fleet/routes');
+        return res.data?.routes || [];
+      },
+      async () => {
+        return ALL_ROUTES.map((r, i) => ({
+          id: `route_${i + 1}`,
+          name: r.routeName,
+          description: `${r.stops.length} stops in Srinagar`,
+          stops: r.stops.map((s, idx) => ({
+            name: s.name,
+            latitude: s.location.latitude,
+            longitude: s.location.longitude,
+            stopOrder: idx + 1,
+          })),
+        }));
+      }
+    );
+  },
+
+  async getDriverAssignedRoute(busNo: string): Promise<any> {
+    return liveOrDemo(
+      async () => {
+        const res = await apiClient.get<any>('/api/fleet/driver-route', { params: { busNo } });
+        return res.data;
+      },
+      async () => {
+        const matched = ALL_ROUTES.find((r) => r.busNo === busNo) || ALL_ROUTES[0];
+        return {
+          status: 'success',
+          busNo,
+          routeId: 'demo_route',
+          routeName: matched.routeName,
+          route: {
+            id: 'demo_route',
+            name: matched.routeName,
+            stops: matched.stops.map((s, i) => ({
+              name: s.name,
+              latitude: s.location.latitude,
+              longitude: s.location.longitude,
+              stopOrder: i + 1,
+            })),
+          },
+          path: matched.path,
+        };
       }
     );
   },

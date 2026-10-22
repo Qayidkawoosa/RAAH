@@ -42,6 +42,12 @@ import {
   forwardVisionEventToDMSEngine,
   VisionSafetyEvent,
   initNativeLandmarkBridge,
+  extractTorsoGeometry,
+  evaluateHybridFusion,
+  SeatbeltTemporalTracker,
+  createSeatbeltDetectorEngine,
+  SEATBELT_TEMPORAL_STATE,
+  detectPose,
 } from '../../services/dms/visionCueAdapter';
 import { dmsEngine } from '../../services/dms/dmsEngine';
 import {
@@ -103,6 +109,11 @@ export const LiveDriverCockpit: React.FC<LiveDriverCockpitProps> = ({
   const lastPhoneCheckRef = useRef<number>(0);
   const latestPhoneStateRef = useRef<any>(null);
   const latestHandsRef = useRef<any[]>([]);
+  const seatbeltEngineRef = useRef<any>(null);
+  const seatbeltCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastSeatbeltCheckRef = useRef<number>(0);
+  const latestSeatbeltRef = useRef<boolean>(false);
+  const latestSeatbeltStateRef = useRef<any>(null);
 
   // Enumerate & Refresh Available Video Devices (Built-in & External USB / Dashcams on Web)
   const refreshCameras = useCallback(async () => {
@@ -143,12 +154,25 @@ export const LiveDriverCockpit: React.FC<LiveDriverCockpitProps> = ({
       });
 
       driverEngineRef.current = createDriverStateEngine();
-      phoneEngineRef.current = createPhoneDetectorEngine();
+      phoneEngineRef.current = createPhoneDetectorEngine({
+        callingConfirmationMs: 1000,
+        dropoutToleranceMs: 750,
+      });
+      seatbeltEngineRef.current = createSeatbeltDetectorEngine({
+        selectedSide: "AUTO",
+        confidenceThreshold: 0.38,
+        retentionThreshold: 0.22,
+        confirmationWindowMs: 750,
+        unfastenDelayMs: 1500,
+      });
 
       const pCanvas = document.createElement('canvas');
       pCanvas.width = 320;
       pCanvas.height = 240;
       processCanvasRef.current = pCanvas;
+
+      const sCanvas = document.createElement('canvas');
+      seatbeltCanvasRef.current = sCanvas;
 
       async function init() {
         try {
@@ -293,15 +317,143 @@ export const LiveDriverCockpit: React.FC<LiveDriverCockpitProps> = ({
     };
     setDriverState(fullState);
 
+    // Evaluate Hands on Wheel accurately in Cockpit
+    const vHeight = video.videoHeight || 480;
+    const vWidth = video.videoWidth || 640;
+    const chin = detection?.faceLandmarks?.[152];
+    const nose = detection?.faceLandmarks?.[1];
+    const forehead = detection?.faceLandmarks?.[10];
+    const chinY = chin ? chin.y * vHeight : vHeight * 0.45;
+    const faceH = (chin && forehead)
+      ? Math.hypot((chin.x - forehead.x) * vWidth, (chin.y - forehead.y) * vHeight)
+      : vHeight * 0.28;
+    const faceRadius = faceH * 0.65;
+    const steeringZoneMinY = Math.max(vHeight * 0.44, chinY + faceH * 0.18);
+    const pBox = latestPhoneStateRef.current?.rawPhones?.[0]?.box;
+
+    const handsOnWheelList = (latestHandsRef.current || []).filter((h: any) => {
+      const hwX = h.wristPx ? h.wristPx.x : (h.bbox?.originX || 0) + (h.bbox?.width || 0) / 2;
+      const hwY = h.wristPx ? h.wristPx.y : (h.bbox?.originY || 0) + (h.bbox?.height || 0) / 2;
+      if (nose) {
+        const distToNose = Math.hypot(hwX - nose.x * vWidth, hwY - nose.y * vHeight);
+        if (distToNose < faceRadius) return false;
+      }
+      if (hwY < chinY) return false;
+      if (pBox) {
+        const pdx = Math.abs(hwX - (pBox.originX + pBox.width / 2));
+        const pdy = Math.abs(hwY - (pBox.originY + pBox.height / 2));
+        if (pdx < 140 && pdy < 140) return false;
+      }
+      return hwY >= steeringZoneMinY;
+    });
+
+    const cockpitHandsCount = handsOnWheelList.length;
+    const cockpitHandsOnWheel = cockpitHandsCount > 0;
+
+    // Evaluate Seatbelt in Cockpit (250ms cadence)
+    if (now - lastSeatbeltCheckRef.current >= 250) {
+      lastSeatbeltCheckRef.current = now;
+      const frameWidth = video.videoWidth || 640;
+      const frameHeight = video.videoHeight || 480;
+
+      if (!seatbeltEngineRef.current) {
+        seatbeltEngineRef.current = createSeatbeltDetectorEngine({
+          selectedSide: "AUTO",
+          confidenceThreshold: 0.38,
+          retentionThreshold: 0.22,
+          confirmationWindowMs: 750,
+          unfastenDelayMs: 1500,
+        });
+      }
+
+      let poseLandmarks: any = null;
+      if (visionModels.poseLandmarker) {
+        poseLandmarks = detectPose(visionModels.poseLandmarker, video, now);
+      }
+      const targetLandmarks = poseLandmarks || (detection?.faceLandmarks || null);
+      const sCanvas = seatbeltCanvasRef.current;
+
+      if (targetLandmarks && sCanvas && frameWidth > 0 && frameHeight > 0) {
+        try {
+          if (sCanvas.width !== frameWidth || sCanvas.height !== frameHeight) {
+            sCanvas.width = frameWidth;
+            sCanvas.height = frameHeight;
+          }
+          const sctx = sCanvas.getContext('2d', { willReadFrequently: true });
+          if (sctx) {
+            // Render horizontally mirrored video frame onto offscreen buffer so pixel coordinates match driver perspective
+            sctx.save();
+            sctx.translate(frameWidth, 0);
+            sctx.scale(-1, 1);
+            sctx.drawImage(video, 0, 0, frameWidth, frameHeight);
+            sctx.restore();
+
+            const sImageData = sctx.getImageData(0, 0, frameWidth, frameHeight);
+            const seatbeltRes = seatbeltEngineRef.current.processFrame({
+              imageData: sImageData,
+              poseLandmarks: targetLandmarks,
+              frameWidth,
+              frameHeight,
+              timestamp: now,
+            });
+            latestSeatbeltStateRef.current = seatbeltRes;
+            latestSeatbeltRef.current = Boolean(seatbeltRes?.isFastened);
+          }
+        } catch (sbErr) {
+          console.warn('[LiveDriverCockpit] Seatbelt evaluation error:', sbErr);
+        }
+      } else {
+        const seatbeltRes = seatbeltEngineRef.current.processFrame({
+          imageData: null,
+          poseLandmarks: null,
+          frameWidth,
+          frameHeight,
+          timestamp: now,
+        });
+        latestSeatbeltStateRef.current = seatbeltRes;
+        latestSeatbeltRef.current = Boolean(seatbeltRes?.isFastened);
+      }
+    }
+
+    const isDistracted = Boolean(
+      fullState.pose?.isDistracted &&
+      fullState.pose?.direction !== 'FORWARD'
+    );
+
     // Update Central DMS status
     dmsEngine.updateVisionMetrics({
       perclos: fullState.eyes?.perclosScore ? fullState.eyes.perclosScore / 100 : 0.05,
       isMicrosleeping: fullState.eyes?.isMicrosleep,
-      isDistracted: fullState.pose?.isDistracted,
-      isYawning: fullState.mouth?.isYawningNow,
-      isUsingPhone: fullState.phone?.isConfirmed,
-      phoneMode: fullState.phone?.mode === 'CALLING' ? 'calling' : fullState.phone?.mode === 'TEXTING' ? 'texting' : 'none',
-      handsOnWheel: !(fullState.phone?.isConfirmed && fullState.phone?.isHandAssociated),
+      isDistracted,
+      distractionReason: isDistracted
+        ? fullState.pose.pitch > 22
+          ? 'looking_up'
+          : fullState.pose.pitch < -20
+          ? 'looking_down'
+          : fullState.pose.yaw > 25
+          ? 'looking_left'
+          : fullState.pose.yaw < -25
+          ? 'looking_right'
+          : fullState.pose?.direction && fullState.pose.direction.startsWith('GAZE_')
+          ? (fullState.pose.direction.toLowerCase() as any)
+          : 'head_turned'
+        : 'normal',
+      headPose: {
+        yaw: fullState.pose?.yaw || 0,
+        pitch: fullState.pose?.pitch || 0,
+        roll: fullState.pose?.roll || 0,
+        direction: fullState.pose?.direction || 'FORWARD',
+        isLookingAway: isDistracted,
+      },
+      isUsingPhone: Boolean(fullState.phone?.isConfirmed && fullState.phone?.isHandAssociated),
+      phoneMode: (fullState.phone?.isHandAssociated && fullState.phone?.mode === 'CALLING')
+        ? 'calling'
+        : (fullState.phone?.isHandAssociated && fullState.phone?.mode === 'TEXTING')
+        ? 'texting'
+        : 'none',
+      handsCount: cockpitHandsCount,
+      handsOnWheel: cockpitHandsOnWheel,
+      seatbeltFastened: latestSeatbeltRef.current,
     });
 
     // 5. Evaluate Safety Events
@@ -320,6 +472,7 @@ export const LiveDriverCockpit: React.FC<LiveDriverCockpitProps> = ({
         fullState.pose,
         fullState.phone,
         fullState.hands,
+        latestSeatbeltStateRef.current,
         showWireframe
       );
     }
@@ -335,6 +488,7 @@ export const LiveDriverCockpit: React.FC<LiveDriverCockpitProps> = ({
     headPose: any,
     phoneState: any,
     hands: any[],
+    seatbeltState: any,
     wireframeEnabled: boolean
   ) {
     const ctx = canvas.getContext('2d');
@@ -472,20 +626,136 @@ export const LiveDriverCockpit: React.FC<LiveDriverCockpitProps> = ({
     // 3. Draw Mobile Phone Bounding Box
     if (phoneState?.candidate) {
       const { originX, originY, width, height } = phoneState.candidate.box;
-      const isConfirmed = phoneState.isConfirmed;
+      const isInHand = Boolean(phoneState.isHandAssociated);
+      const isConfirmed = phoneState.isConfirmed && isInHand;
+      const earBadge = phoneState.activeEar
+        ? phoneState.activeEar === 'LEFT_EAR'
+          ? ' (LEFT EAR)'
+          : ' (RIGHT EAR)'
+        : '';
+
+      const modeStr = (isInHand && phoneState.mode === 'CALLING')
+        ? `PHONE: CALLING${earBadge}`
+        : (isInHand && phoneState.mode === 'TEXTING')
+        ? 'PHONE: TEXTING'
+        : isInHand
+        ? 'PHONE: IN HAND'
+        : 'PHONE (IN MOUNT)';
+
+      const boxColor = !isInHand
+        ? '#64748b'
+        : phoneState.mode === 'CALLING'
+        ? '#ef4444'
+        : phoneState.mode === 'TEXTING'
+        ? '#f59e0b'
+        : '#3b82f6';
+
       ctx.save();
-      ctx.strokeStyle = isConfirmed ? '#10b981' : '#f59e0b';
+      ctx.strokeStyle = boxColor;
       ctx.lineWidth = 2.5;
       ctx.strokeRect(originX, originY, width, height);
 
       // Label
       ctx.fillStyle = 'rgba(13, 13, 20, 0.85)';
-      ctx.fillRect(originX, originY - 24, Math.max(130, width), 22);
-      ctx.fillStyle = isConfirmed ? '#10b981' : '#f59e0b';
+      ctx.fillRect(originX, originY - 24, Math.max(160, width), 22);
+      ctx.fillStyle = boxColor;
       ctx.font = 'bold 12px sans-serif';
-      const modeStr = phoneState.mode === 'CALLING' ? 'PHONE: CALLING' : phoneState.mode === 'TEXTING' ? 'PHONE: TEXTING' : 'PHONE DETECTED';
       ctx.fillText(modeStr, originX + 6, originY - 8);
       ctx.restore();
+    }
+
+    // 4. Draw Seatbelt Overlay Ribbon & Badge
+    if (seatbeltState && seatbeltState.isDriverPresent) {
+      const line = seatbeltState.strapLine || seatbeltState.targetPath;
+      if (line && line.start && line.end) {
+        const x1 = line.start.x;
+        const y1 = line.start.y;
+        const x2 = line.end.x;
+        const y2 = line.end.y;
+
+        ctx.save();
+        if (seatbeltState.isFastened) {
+          // FASTENED: Bright glowing emerald ribbon
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.strokeStyle = 'rgba(0, 255, 136, 0.35)';
+          ctx.lineWidth = 10;
+          ctx.lineCap = 'round';
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.strokeStyle = '#00ff88';
+          ctx.lineWidth = 3.5;
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(x1, y1, 5, 0, 2 * Math.PI);
+          ctx.arc(x2, y2, 5, 0, 2 * Math.PI);
+          ctx.fillStyle = '#00ff88';
+          ctx.fill();
+
+          const tagText = `SEATBELT FASTENED ${Math.round((seatbeltState.smoothedConfidence || seatbeltState.confidence || 0.9) * 100)}%`;
+          ctx.font = 'bold 11px monospace';
+          const tagW = ctx.measureText(tagText).width + 16;
+          const tagH = 20;
+          const pillX = Math.max(10, Math.min(w - tagW - 10, x1 - tagW / 2));
+          const pillY = Math.max(10, y1 - 24);
+
+          ctx.fillStyle = 'rgba(10, 15, 29, 0.92)';
+          ctx.strokeStyle = '#00ff88';
+          ctx.lineWidth = 1.2;
+          ctx.fillRect(pillX, pillY, tagW, tagH);
+          ctx.strokeRect(pillX, pillY, tagW, tagH);
+
+          ctx.fillStyle = '#00ff88';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(tagText, pillX + tagW / 2, pillY + tagH / 2);
+        } else if (seatbeltState.state === 'FASTENING') {
+          // FASTENING: Pulsing amber dashed track
+          ctx.beginPath();
+          ctx.setLineDash([8, 6]);
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.strokeStyle = '#ffb703';
+          ctx.lineWidth = 3;
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          const pct = Math.round(seatbeltState.progress || 0);
+          const tagText = `LATCHING SEATBELT (${pct}%)...`;
+          ctx.font = 'bold 11px monospace';
+          const tagW = ctx.measureText(tagText).width + 16;
+          const tagH = 20;
+          const pillX = Math.max(10, Math.min(w - tagW - 10, x1 - tagW / 2));
+          const pillY = Math.max(10, y1 - 24);
+
+          ctx.fillStyle = 'rgba(10, 15, 29, 0.92)';
+          ctx.strokeStyle = '#ffb703';
+          ctx.lineWidth = 1.2;
+          ctx.fillRect(pillX, pillY, tagW, tagH);
+          ctx.strokeRect(pillX, pillY, tagW, tagH);
+
+          ctx.fillStyle = '#ffb703';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(tagText, pillX + tagW / 2, pillY + tagH / 2);
+        } else {
+          // UNFASTENED: Dim Guide Track
+          ctx.beginPath();
+          ctx.setLineDash([4, 6]);
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.strokeStyle = 'rgba(255, 51, 102, 0.35)';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        ctx.restore();
+      }
     }
   }
 
@@ -968,13 +1238,13 @@ export const LiveDriverCockpit: React.FC<LiveDriverCockpitProps> = ({
             {/* Right Column: High-Tech Telemetry HUD */}
             <View style={[styles.hudCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               {/* Overall Driver Attention Status */}
-              <View style={[styles.attentionStatusBanner, { backgroundColor: pose.isDistracted || eyes.isMicrosleep ? '#7F1D1D' : '#1A1A28' }]}>
-                <Activity size={20} color={pose.isDistracted || eyes.isMicrosleep ? '#EF4444' : colors.success} />
+              <View style={[styles.attentionStatusBanner, { backgroundColor: ((pose.isDistracted && pose.direction !== 'FORWARD') || eyes.isMicrosleep) ? '#7F1D1D' : '#1A1A28' }]}>
+                <Activity size={20} color={((pose.isDistracted && pose.direction !== 'FORWARD') || eyes.isMicrosleep) ? '#EF4444' : colors.success} />
                 <View style={{ marginLeft: 10 }}>
                   <Text style={[typography.bodyMedium, { color: colors.textPrimary, fontWeight: '700' }]}>
                     {eyes.isMicrosleep
                       ? '⚠️ MICROSLEEP ALERT'
-                      : pose.isDistracted
+                      : (pose.isDistracted && pose.direction !== 'FORWARD')
                       ? '⚠️ OFF-ROAD GAZE DISTRACTION'
                       : phone.isConfirmed
                       ? '⚠️ MOBILE PHONE DISTRACTION'
@@ -1018,7 +1288,7 @@ export const LiveDriverCockpit: React.FC<LiveDriverCockpitProps> = ({
                   <Text style={[typography.caption, { color: colors.textSecondary, fontWeight: '700' }]}>
                     HEAD POSE & GAZE DIRECTION
                   </Text>
-                  <Text style={[typography.caption, { color: pose.isDistracted ? colors.danger : colors.success, fontWeight: '700' }]}>
+                  <Text style={[typography.caption, { color: (pose.isDistracted && pose.direction !== 'FORWARD') ? colors.danger : colors.success, fontWeight: '700' }]}>
                     {pose.direction} (Y:{pose.yaw}° P:{pose.pitch}°)
                   </Text>
                 </View>
@@ -1028,7 +1298,7 @@ export const LiveDriverCockpit: React.FC<LiveDriverCockpitProps> = ({
                       styles.meterFill,
                       {
                         width: `${Math.min(100, Math.max(10, Math.abs(pose.yaw) * 2))}%`,
-                        backgroundColor: pose.isDistracted ? colors.danger : colors.primary,
+                        backgroundColor: (pose.isDistracted && pose.direction !== 'FORWARD') ? colors.danger : colors.primary,
                       },
                     ]}
                   />
@@ -1264,7 +1534,11 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   nativeLiveOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     justifyContent: 'space-between',
     padding: 12,
   },

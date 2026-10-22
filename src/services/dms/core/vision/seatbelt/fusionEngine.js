@@ -19,7 +19,7 @@ export function evaluateHybridFusion(imageData, torsoGeometry, options = {}) {
   const {
     selectedSide = "AUTO",
     weights = { transect: 0.50, edgeHough: 0.25, contrast: 0.25 },
-    minFusionThreshold = 0.38,
+    minFusionThreshold = 0.42,
   } = options;
 
   if (!torsoGeometry) {
@@ -49,20 +49,24 @@ export function evaluateHybridFusion(imageData, torsoGeometry, options = {}) {
       resB.confidence * weights.edgeHough +
       resC.confidence * weights.contrast;
 
-    // Balanced Fusion Ensemble Gating
-    let finalConfidence = rawFused;
-    const hasAnyStrongSignal =
-      (resA.hasCorridorDetection || resA.confidence >= 0.32) ||
-      (resB.evidenceType === "DUAL_PARALLEL_BAND" && resB.confidence >= 0.38) ||
-      (resC.confidence >= 0.40);
+    // PRIMARY CORRIDOR GATING:
+    // A physical seatbelt ribbon MUST be confirmed by Method A's transect probes inside the corridor.
+    // If Method A detects no corridor ribbon and has low confidence (< 0.28),
+    // any signal in Method B or C is clothing folds, logos, or background clutter.
+    const hasGeometricRibbon =
+      (resA.hasCorridorDetection && resA.confidence >= 0.22) ||
+      (resA.confidence >= 0.22 && resB.confidence >= 0.30 && resB.evidenceType === "DUAL_PARALLEL_BAND") ||
+      (resA.matchedTransects >= 3 && resA.confidence >= 0.20 && (resB.confidence >= 0.25 || resC.confidence >= 0.28)) ||
+      (resB.confidence >= 0.35 && resB.evidenceType === "DUAL_PARALLEL_BAND" && resC.confidence >= 0.32);
 
-    if (!hasAnyStrongSignal) {
-      finalConfidence = Math.min(0.18, rawFused * 0.35);
-    } else if (resA.confidence >= 0.38 || resB.confidence >= 0.40) {
+    let finalConfidence = rawFused;
+    if (!hasGeometricRibbon) {
+      finalConfidence = Math.min(0.12, rawFused * 0.18);
+    } else if (resA.confidence >= 0.35 && (resB.confidence >= 0.35 || resC.confidence >= 0.35)) {
       finalConfidence = Math.min(1.0, rawFused * 1.10);
     }
 
-    const isFastened = finalConfidence >= minFusionThreshold && hasAnyStrongSignal;
+    const isFastened = hasGeometricRibbon && finalConfidence >= minFusionThreshold;
 
     return {
       path,

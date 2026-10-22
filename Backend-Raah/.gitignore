@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+.env.*
+.env.local
+!.env.example
+*.log
+
+# IDE and Agent skills folders
+.agents/
+.windsurf/
+.claude/
+.cursor/
+.devin/
+
+/generated/prisma

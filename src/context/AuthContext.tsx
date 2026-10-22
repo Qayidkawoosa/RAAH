@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { authService } from '../services/auth';
 import { UserProfile, UserRole } from '../types/auth';
+import { backgroundDmsService } from '../services/dms/backgroundDmsService';
+import { dmsEngine } from '../services/dms/dmsEngine';
 
 interface AuthContextType {
   user: UserProfile | null;
@@ -76,9 +78,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // Ensure DMS and camera are never active for non-driver roles (admin, parent, school, rto)
+  useEffect(() => {
+    if (user && user.role !== 'driver') {
+      backgroundDmsService.stop().catch(() => {});
+      dmsEngine.setTrackingActive(false);
+      dmsEngine.reset();
+    }
+  }, [user]);
+
   const logout = async () => {
     setLoading(true);
     try {
+      try {
+        await backgroundDmsService.stop();
+      } catch (dmsErr) {
+        console.warn('Failed to stop DMS on logout:', dmsErr);
+      }
+      dmsEngine.setTrackingActive(false);
+      dmsEngine.reset();
+
       await authService.logout();
       setUser(null);
     } catch (err: any) {

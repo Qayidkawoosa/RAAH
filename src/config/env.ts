@@ -6,17 +6,19 @@ interface AppEnv {
 
 const read = (value: string | undefined): string => (value ?? '').trim();
 
+const DEFAULT_BACKEND_URL = 'http://103.14.120.52:4260';
+
 export const env: AppEnv = {
-  apiUrl: read(process.env.EXPO_PUBLIC_API_URL),
+  apiUrl: read(process.env.EXPO_PUBLIC_API_URL) || DEFAULT_BACKEND_URL,
   socketUrl:
-    read(process.env.EXPO_PUBLIC_SOCKET_URL) || read(process.env.EXPO_PUBLIC_API_URL),
+    read(process.env.EXPO_PUBLIC_SOCKET_URL) ||
+    read(process.env.EXPO_PUBLIC_API_URL) ||
+    DEFAULT_BACKEND_URL,
   googleMapsApiKey: read(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY),
 };
 
 /**
- * When EXPO_PUBLIC_API_URL is not set, the app runs in fully self-contained
- * demo mode: a simulated bus drives the demo route and all dashboards are
- * powered by local demo data. Setting the URL switches every service to the
- * live Express + Socket.IO backend automatically.
+ * Always live — the app connects to the production Socket.IO / Express
+ * backend. The offline bus simulator is permanently disabled.
  */
-export const isLiveBackend: boolean = env.apiUrl.length > 0;
+export const isLiveBackend: boolean = true;

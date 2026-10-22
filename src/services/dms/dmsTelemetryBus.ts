@@ -20,6 +20,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafetyEvent, SafetyEventType, SafetyEventSeverity } from '../../types/fleet';
 import { tripService } from '../tripService';
+import { realtimeService } from '../realtime';
 
 const DMS_BROADCAST_CHANNEL_NAME = 'raasta_dms_anomalies_channel';
 const DMS_STORAGE_TRIGGER_KEY = '@raasta_dms_live_anomaly_trigger';
@@ -34,9 +35,42 @@ class DMSTelemetryBus {
   private channel: BroadcastChannel | null = null;
   private subscribers: Set<(event: SafetyEvent) => void> = new Set();
   private isStorageListenerAttached: boolean = false;
+  private isSocketListenerAttached: boolean = false;
 
   constructor() {
     this.initTransport();
+  }
+
+  private normalizeSafetyEvent(raw: any): SafetyEvent {
+    if (!raw) return raw;
+    const busId = raw.bus_id || raw.busNo || 'JK-01-A-1234';
+    const eventId = raw.event_id || raw.id || `evt_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const type = (raw.type || raw.violationType || 'drowsiness').toLowerCase();
+    const severity = (raw.severity || 'warn').toLowerCase();
+    const detectedAt = raw.detected_at || (raw.timestamp ? new Date(raw.timestamp).toISOString() : new Date().toISOString());
+
+    return {
+      event_id: eventId,
+      trip_id: raw.trip_id || raw.tripId || 'trip_live',
+      bus_id: busId,
+      driver_id: raw.driver_id || raw.driverId || 'DRV-101',
+      school_id: raw.school_id || raw.schoolId || 'SCH-01',
+      source: raw.source || 'driver_cam',
+      type: type as any,
+      severity: severity as any,
+      confidence: typeof raw.confidence === 'number' ? raw.confidence : 0.95,
+      status: raw.status || 'auto_flagged',
+      detected_at: detectedAt,
+      lat: raw.lat ?? raw.latitude ?? 34.0837,
+      lng: raw.lng ?? raw.longitude ?? 74.7973,
+      speed_kmph: raw.speed_kmph ?? raw.speedKmh ?? raw.speed ?? 0,
+      duration_ms: raw.duration_ms ?? 3000,
+      clip_ref: raw.clip_ref ?? null,
+      thumbnail_ref: raw.thumbnail_ref ?? raw.snapshotUrl ?? null,
+      reviewed_by: raw.reviewed_by ?? null,
+      reviewed_at: raw.reviewed_at ?? null,
+      review_note: raw.review_note ?? raw.message ?? null,
+    };
   }
 
   private initTransport(): void {
@@ -70,11 +104,25 @@ class DMSTelemetryBus {
         }
       });
     }
+
+    // 3. Socket.IO Real-Time Alert Listener (Multi-device phone & vehicle sync)
+    if (!this.isSocketListenerAttached) {
+      try {
+        const socket = (realtimeService as any).ensureSocket?.();
+        if (socket) {
+          this.isSocketListenerAttached = true;
+          socket.on('bus:event', (evt: any) => this.notifyLocalSubscribers(evt));
+          socket.on('dms:alert:broadcast', (evt: any) => this.notifyLocalSubscribers(evt));
+        }
+      } catch (err) {
+        console.warn('[DMSTelemetryBus] Socket.IO listener attachment failed:', err);
+      }
+    }
   }
 
   /**
    * Broadcast an anomaly / safety event detected by the DMS engine.
-   * Dispatches via BroadcastChannel, localStorage triggers, and persists to AsyncStorage.
+   * Dispatches via BroadcastChannel, localStorage triggers, Socket.IO, and persists to AsyncStorage.
    */
   public async broadcastSafetyEvent(event: SafetyEvent): Promise<void> {
     const payload: DMSAnomalyNotification = {
@@ -103,7 +151,17 @@ class DMSTelemetryBus {
       }
     }
 
-    // 4. Persist to storage through tripService for historical incident review
+    // 4. Emit to Socket.IO so it reaches the server & other devices
+    try {
+      const socket = (realtimeService as any).ensureSocket?.();
+      if (socket) {
+        socket.emit('driver:event', { ...event, busNo: (event as any).busNo || event.bus_id || 'JK-01-A-1234' });
+      }
+    } catch (err) {
+      console.warn('[DMSTelemetryBus] Failed to emit driver:event to Socket.IO:', err);
+    }
+
+    // 5. Persist to storage through tripService for historical incident review
     try {
       await tripService.recordSafetyEvent(event);
     } catch (err) {
@@ -136,10 +194,11 @@ class DMSTelemetryBus {
   /**
    * Internal dispatcher for registered listeners
    */
-  private notifyLocalSubscribers(event: SafetyEvent): void {
+  private notifyLocalSubscribers(event: SafetyEvent | any): void {
+    const normalized = this.normalizeSafetyEvent(event);
     this.subscribers.forEach((callback) => {
       try {
-        callback(event);
+        callback(normalized);
       } catch (err) {
         console.error('[DMSTelemetryBus] Error executing subscriber callback:', err);
       }

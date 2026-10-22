@@ -29,7 +29,8 @@ const io = new Server(server, { cors: { origin: '*' } });
 
 registerRoutes(app, store);
 registerSockets(io, store);
-startDemoBus(io, store);
+// Fake demo bus disabled — only real registered driver vehicles broadcast telemetry
+// startDemoBus(io, store);
 
 app.get('/health', (_req, res) =>
   res.json({

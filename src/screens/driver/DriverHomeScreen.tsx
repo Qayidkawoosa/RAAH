@@ -4,7 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import { Siren, Users } from 'lucide-react-native';
+import { Siren, Users, MapPin } from 'lucide-react-native';
 import { ScreenContainer } from '../../components/ui/ScreenContainer';
 import { ScreenHeader } from '../../components/ui/ScreenHeader';
 import { AppCard } from '../../components/ui/AppCard';
@@ -20,12 +20,16 @@ import { useTrip } from '../../context/TripContext';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { typography } from '../../theme/typography';
 import { SPEED_LIMIT_KMH } from '../../constants/safety';
-import { DEMO_BUS_NO, DEMO_ROUTE_PATH_B, ALL_ROUTES } from '../../constants/demoRoute';
+import { DEMO_BUS_NO, DEMO_ROUTE_PATH_B, ALL_ROUTES, RouteConfig } from '../../constants/demoRoute';
 import { AppStackParamList } from '../../navigation/types';
 import { formatKm } from '../../utils/format';
+import { bearingDegrees } from '../../utils/geo';
 import { ScheduleBanner } from '../../components/ScheduleBanner';
 import { DMSHeadsUpDisplay } from '../../components/DMSHeadsUpDisplay';
 import { backgroundDmsService } from '../../services/dms/backgroundDmsService';
+import { dmsEngine } from '../../services/dms/dmsEngine';
+import { tripService } from '../../services/tripService';
+import { LatLng, BusStop } from '../../types/trip';
 
 type Navigation = NativeStackNavigationProp<AppStackParamList>;
 
@@ -45,6 +49,7 @@ const DriverHomeScreen: React.FC = () => {
     notifyParentOfPickup,
     setSimulationRoute,
     simulationRoutePath,
+    setActiveRouteConfig,
   } = useTrip();
   const { colors, spacing } = useAppTheme();
   const navigation = useNavigation<Navigation>();
@@ -103,28 +108,161 @@ const DriverHomeScreen: React.FC = () => {
     return counts;
   }, [busStudents]);
 
+  const [assignedRouteConfig, setAssignedRouteConfig] = useState<RouteConfig | null>(null);
+
   const selectedRouteConfig = React.useMemo(() => {
-    return ALL_ROUTES.find((r) => r.path === simulationRoutePath) ?? ALL_ROUTES[0];
-  }, [simulationRoutePath]);
+    if (assignedRouteConfig && simulationRoutePath === assignedRouteConfig.path) {
+      return assignedRouteConfig;
+    }
+    return ALL_ROUTES.find((r) => r.path === simulationRoutePath) ?? assignedRouteConfig ?? ALL_ROUTES[0];
+  }, [assignedRouteConfig, simulationRoutePath]);
 
   const activeRouteStops = selectedRouteConfig.stops;
+  const driverBusNo = user?.vehicleNo || user?.assignedBusNo;
 
-  const { location: simLocation } = useBusLocations(user?.vehicleNo ?? DEMO_BUS_NO);
+  const { location: simLocation } = useBusLocations(driverBusNo);
 
-  // Set initial simulation route on mount based on driver's vehicle number
+  const currentBusLocation = React.useMemo(() => {
+    if (!trip) return null;
+    if (lastPoint) {
+      const heading = (trip.path && trip.path.length > 1)
+        ? bearingDegrees(trip.path[trip.path.length - 2], lastPoint)
+        : (simLocation?.heading ?? 45);
+      return {
+        busId: trip.busNo,
+        latitude: lastPoint.latitude,
+        longitude: lastPoint.longitude,
+        heading,
+        speedKmh: Math.round(lastPoint.speedKmh),
+        status: isDiverging ? ('delayed' as const) : ('on_route' as const),
+        etaMinutes: simLocation?.etaMinutes ?? 10,
+        nextStopName: upcomingPickup?.stopName ?? simLocation?.nextStopName ?? 'Hazratbal',
+        lastUpdated: lastPoint.timestamp,
+        schoolName: user?.schoolName,
+        driverName: user?.name,
+        complianceStatus: 'Compliant',
+      };
+    }
+    return simLocation;
+  }, [trip, lastPoint, simLocation, isDiverging, upcomingPickup, user]);
+
+  // Fetch driver assigned route from their bus record in PostgreSQL when driver logs in
   useEffect(() => {
+    let active = true;
+    async function loadDriverRoute() {
+      if (!driverBusNo) return;
+      try {
+        const routeData = await tripService.getDriverAssignedRoute(driverBusNo);
+        if (!active || !routeData) return;
+
+        // Check if route matches predefined smooth road waypoints
+        const matched = ALL_ROUTES.find(
+          (r) => r.routeName === routeData.routeName || r.busNo === driverBusNo
+        );
+
+        let stops: BusStop[] = [];
+        if (routeData.route?.stops && routeData.route.stops.length > 0) {
+          stops = routeData.route.stops.map((s: any) => ({
+            name: s.name,
+            location: { latitude: s.latitude, longitude: s.longitude },
+          }));
+        } else if (matched) {
+          stops = matched.stops;
+        } else {
+          stops = ALL_ROUTES[0].stops;
+        }
+
+        let path: LatLng[] = matched?.path || [];
+        if (path.length === 0 && stops.length > 1) {
+          for (let i = 0; i < stops.length - 1; i++) {
+            const a = stops[i].location;
+            const b = stops[i + 1].location;
+            for (let step = 0; step < 12; step++) {
+              const t = step / 12;
+              path.push({
+                latitude: a.latitude + (b.latitude - a.latitude) * t,
+                longitude: a.longitude + (b.longitude - a.longitude) * t,
+              });
+            }
+          }
+          path.push(stops[stops.length - 1].location);
+        } else if (path.length === 0) {
+          path = ALL_ROUTES[0].path;
+        }
+
+        const resolvedConfig: RouteConfig = {
+          busNo: driverBusNo,
+          driverName: user?.name || 'Assigned Driver',
+          routeName: routeData.routeName || routeData.route?.name || 'Assigned Planned Route',
+          path,
+          stops,
+        };
+
+        setAssignedRouteConfig(resolvedConfig);
+        setSimulationRoute(resolvedConfig.path);
+        setActiveRouteConfig(resolvedConfig);
+      } catch (err) {
+        console.warn('Could not fetch driver route from PostgreSQL:', err);
+      }
+    }
+
     if (user && !trip) {
-      const driverRoute = ALL_ROUTES.find((r) => r.busNo === user.vehicleNo) ?? ALL_ROUTES[0];
-      setSimulationRoute(driverRoute.path);
+      loadDriverRoute();
     }
-  }, [user, trip, setSimulationRoute]);
 
-  // Ensure Background DMS Guard is running during active trips
-  useEffect(() => {
-    if (trip && !backgroundDmsService.isDmsActive()) {
-      backgroundDmsService.start();
+    return () => {
+      active = false;
+    };
+  }, [driverBusNo, user, trip, setSimulationRoute, setActiveRouteConfig]);
+
+  const nextStopName = React.useMemo(() => {
+    if (trip && upcomingPickup?.stopName) {
+      return upcomingPickup.stopName;
     }
-  }, [trip]);
+    if (trip && currentBusLocation?.nextStopName) {
+      return currentBusLocation.nextStopName;
+    }
+    return activeRouteStops[0]?.name || 'Lal Chowk';
+  }, [trip, upcomingPickup, currentBusLocation, activeRouteStops]);
+
+  const nextStopStudentCount = React.useMemo(() => {
+    if (trip && upcomingPickup?.studentNames?.length) {
+      return upcomingPickup.studentNames.length;
+    }
+    const fromCounts = stopStudentCounts[nextStopName];
+    if (typeof fromCounts === 'number' && fromCounts > 0) return fromCounts;
+    const fromList = busStudents.filter(
+      (s) => s.pickupStop?.toLowerCase() === nextStopName.toLowerCase()
+    ).length;
+    if (fromList > 0) return fromList;
+    return busStudents.length > 0 ? Math.min(busStudents.length, 3) : 3;
+  }, [trip, upcomingPickup, stopStudentCounts, nextStopName, busStudents]);
+
+  // Configure Driver Monitoring Guard metadata during active trip
+  // Safe check: Do NOT automatically auto-start the heavy MediaPipe background vision engine
+  // on mobile web during trip start to prevent CPU locking and keep GPS tracking lightweight and unblocked.
+  // DMS camera inference only starts if explicitly enabled by the driver via the HUD.
+  useEffect(() => {
+    if (user?.role === 'driver' && trip && trip.status === 'active') {
+      dmsEngine.tripId = trip.id;
+      dmsEngine.busId = trip.busNo;
+      dmsEngine.driverId = user.uid;
+      dmsEngine.setTrackingActive(true);
+      // MediaPipe vision engine is kept on standby until explicitly enabled via HUD
+    } else {
+      if (backgroundDmsService.isDmsActive()) {
+        backgroundDmsService.stop();
+      }
+      dmsEngine.setTrackingActive(false);
+    }
+
+    return () => {
+      if (!trip) {
+        backgroundDmsService.stop();
+        dmsEngine.setTrackingActive(false);
+      }
+    };
+  }, [trip, user]);
 
   // Demo Simulation: Poll for cross-tab events from Parent App
   useEffect(() => {
@@ -180,6 +318,10 @@ const DriverHomeScreen: React.FC = () => {
   };
 
   const handleEnd = async (): Promise<void> => {
+    try {
+      await backgroundDmsService.stop();
+    } catch (e) {}
+    dmsEngine.setTrackingActive(false);
     const finished = await endTrip();
     if (finished) navigation.navigate('TripSummary', { trip: finished });
   };
@@ -199,7 +341,7 @@ const DriverHomeScreen: React.FC = () => {
 
   const [showCrashModal, setShowCrashModal] = useState(false);
   const [crashCountdown, setCrashCountdown] = useState(10);
-  const crashTimerRef = React.useRef<NodeJS.Timeout | null>(null);
+  const crashTimerRef = React.useRef<any>(null);
 
   const startCrashCountdown = () => {
     setCrashCountdown(10);
@@ -251,13 +393,38 @@ const DriverHomeScreen: React.FC = () => {
 
       <ScreenHeader
         title={`Salaam, ${user?.name.split(' ')[0] ?? 'Driver'}`}
-        subtitle={user?.vehicleNo ? `${user.vehicleNo} · ${selectedRouteConfig.routeName}` : selectedRouteConfig.routeName}
+        subtitle={driverBusNo ? `${driverBusNo} · ${selectedRouteConfig.routeName}` : selectedRouteConfig.routeName}
         showLogout
         showBrand
       />
 
-      {/* Driver Monitoring System (DMS) Heads-Up Display & Alert Bar */}
-      <DMSHeadsUpDisplay busId={user?.vehicleNo} driverId={user?.uid} />
+      {/* Driver Monitoring System (DMS) Heads-Up Display & Alert Bar ONLY during active trip */}
+      {trip && trip.status === 'active' ? (
+        <DMSHeadsUpDisplay busId={driverBusNo} driverId={user?.uid} isTripActive={true} />
+      ) : (
+        <View
+          style={{
+            marginBottom: spacing.md,
+            paddingHorizontal: spacing.md,
+            paddingVertical: spacing.sm,
+            backgroundColor: colors.surface,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: colors.border,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.textTertiary }} />
+            <Text style={{ color: colors.textSecondary, fontSize: 13, fontFamily: 'Poppins-Medium' }}>
+              DMS Camera Standby · Activates on Trip Start
+            </Text>
+          </View>
+          <Badge label="STANDBY" tone="neutral" />
+        </View>
+      )}
 
       {!trip ? (
         <Animated.View entering={FadeInDown.duration(350)}>
@@ -265,16 +432,125 @@ const DriverHomeScreen: React.FC = () => {
         </Animated.View>
       ) : null}
 
+      {/* NEXT STOP BANNER (Planned Route Stop & Student Count) */}
+      <Animated.View entering={FadeInDown.duration(380)}>
+        <View
+          style={{
+            marginBottom: spacing.sm,
+            padding: 14,
+            borderRadius: 14,
+            backgroundColor: colors.surface,
+            borderLeftWidth: 4,
+            borderLeftColor: '#8B5CF6',
+            borderWidth: 1,
+            borderColor: colors.border,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 12 }}>
+            <View
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: 19,
+                backgroundColor: '#8B5CF61A',
+                alignItems: 'center',
+                justifyContent: 'center',
+                marginRight: 10,
+              }}
+            >
+              <MapPin size={20} color="#8B5CF6" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text
+                  style={{
+                    fontSize: 10,
+                    letterSpacing: 0.8,
+                    fontFamily: 'Poppins-Bold',
+                    color: '#8B5CF6',
+                  }}
+                >
+                  NEXT SCHEDULED STOP
+                </Text>
+                {trip ? (
+                  <Badge label="IN TRANSIT" tone="neutral" />
+                ) : (
+                  <Badge label="PLANNED" tone="neutral" />
+                )}
+              </View>
+              <Text
+                style={[typography.titleMedium, { color: colors.textPrimary, marginTop: 1 }]}
+                numberOfLines={1}
+              >
+                {nextStopName}
+              </Text>
+              <Text style={[typography.caption, { color: colors.textSecondary }]} numberOfLines={1}>
+                {selectedRouteConfig.routeName}
+              </Text>
+            </View>
+          </View>
+
+          {/* Student Count Badge */}
+          <View
+            style={{
+              alignItems: 'flex-end',
+              backgroundColor: '#8B5CF618',
+              paddingHorizontal: 12,
+              paddingVertical: 7,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: '#8B5CF640',
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <Users size={15} color="#8B5CF6" />
+              <Text
+                style={{
+                  fontSize: 15,
+                  fontFamily: 'Poppins-Bold',
+                  color: '#8B5CF6',
+                }}
+              >
+                {nextStopStudentCount}
+              </Text>
+            </View>
+            <Text
+              style={{
+                fontSize: 9,
+                fontFamily: 'Poppins-Medium',
+                color: colors.textSecondary,
+                marginTop: 1,
+              }}
+            >
+              {nextStopStudentCount === 1 ? 'Student' : 'Students'}
+            </Text>
+          </View>
+        </View>
+      </Animated.View>
+
       <Animated.View entering={FadeInDown.duration(400)}>
         <View style={{ height: 240, borderRadius: 12, overflow: 'hidden' }}>
           <BusMap
-            busLocation={trip ? simLocation || null : null}
+            busLocation={trip ? currentBusLocation || null : null}
             routeCoordinates={simulationRoutePath.map(p => ({ latitude: p.latitude, longitude: p.longitude }))}
+            routeStrokeColor="#8B5CF6"
+            stops={activeRouteStops.map(s => ({
+              name: s.name,
+              latitude: s.location.latitude,
+              longitude: s.location.longitude,
+            }))}
           />
         </View>
-        {trip && simLocation && (
+        {trip && currentBusLocation ? (
           <Text style={[typography.caption, { color: colors.textSecondary, marginTop: 8, textAlign: 'center' }]}>
-            Next: {simLocation.nextStopName} ({simLocation.etaMinutes} min)
+            Next: {currentBusLocation.nextStopName} ({currentBusLocation.etaMinutes} min) · {currentBusLocation.speedKmh} km/h
+          </Text>
+        ) : (
+          <Text style={[typography.caption, { color: '#8B5CF6', marginTop: 8, textAlign: 'center', fontFamily: 'Poppins-Medium' }]}>
+            Planned Route: {selectedRouteConfig.routeName} ({activeRouteStops.length} Stops)
           </Text>
         )}
       </Animated.View>
@@ -416,7 +692,7 @@ const DriverHomeScreen: React.FC = () => {
         </Text>
       ) : null}
 
-      <Animated.View entering={FadeInDown.delay(160).duration(400)} style={{ marginTop: spacing.lg }}>
+      <Animated.View entering={FadeInDown.delay(160).duration(400)} style={{ marginTop: spacing.lg, zIndex: 999, elevation: 10 }}>
         {trip ? (
           <>
             <View style={styles.actionsRow}>
@@ -435,6 +711,7 @@ const DriverHomeScreen: React.FC = () => {
             label="Start Trip" 
             onPress={handleStart} 
             variant="gradient"
+            style={{ zIndex: 999, elevation: 10 }}
           />
         )}
       </Animated.View>
@@ -470,7 +747,7 @@ const DriverHomeScreen: React.FC = () => {
                     demoEvents.push({
                       id: Date.now().toString(),
                       type: 'geofence_breach',
-                      busNo: user?.assignedBusNo ?? user?.vehicleNo ?? DEMO_BUS_NO,
+                      busNo: driverBusNo || 'BUS',
                       timestamp: Date.now()
                     });
                     await AsyncStorage.setItem('@raasta_demo_events', JSON.stringify(demoEvents));
@@ -505,9 +782,23 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: 'row', gap: 12 },
   speedCard: { flex: 1.2, justifyContent: 'center' },
   scoreCard: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  actionsRow: { flexDirection: 'row', gap: 12 },
-  actionButton: { flex: 1.6 },
-  sosButton: { flex: 1 },
+  actionsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    zIndex: 999,
+    position: 'relative',
+    elevation: 10,
+  },
+  actionButton: {
+    flex: 1.6,
+    zIndex: 999,
+    elevation: 10,
+  },
+  sosButton: {
+    flex: 1,
+    zIndex: 999,
+    elevation: 10,
+  },
   sosRow: { flexDirection: 'row', alignItems: 'center' },
   pickupRow: { flexDirection: 'row', alignItems: 'center' },
   pickupIconWrap: {

@@ -1,7 +1,6 @@
 import { io, Socket } from 'socket.io-client';
-import { env, isLiveBackend } from '../config/env';
+import { env } from '../config/env';
 import { BusLiveState, TripEvent } from '../types/trip';
-import { busSimulator } from './demo/busSimulator';
 
 type StateListener = (state: BusLiveState) => void;
 type EventListener = (event: TripEvent) => void;
@@ -14,7 +13,7 @@ type EventListener = (event: TripEvent) => void;
 class RealtimeService {
   private socket: Socket | null = null;
 
-  private ensureSocket(): Socket {
+  ensureSocket(): Socket {
     if (!this.socket) {
       this.socket = io(env.socketUrl, { transports: ['websocket'] });
     }
@@ -23,29 +22,18 @@ class RealtimeService {
 
   /**
    * Watch a bus (parent/school/RTO side). Returns an unsubscribe fn.
-   * In live mode, if the server sends nothing within 8 s (server down,
-   * wrong IP), the watch falls back to the in-app simulator so tracking
-   * screens are never blank.
+   * Only real Socket.IO telemetry is accepted — the simulator is disabled.
    */
   subscribeToBus(
     busNo: string,
     onState: StateListener,
     onEvent?: EventListener
   ): () => void {
-    if (!isLiveBackend) {
-      return busSimulator.subscribe(busNo, onState, onEvent);
-    }
+    if (!env.socketUrl) return () => {};
     const socket = this.ensureSocket();
-    let receivedLiveState = false;
-    let fallbackUnsubscribe: (() => void) | null = null;
 
     const stateHandler = (state: BusLiveState): void => {
       if (state.busNo !== busNo) return;
-      receivedLiveState = true;
-      if (fallbackUnsubscribe) {
-        fallbackUnsubscribe();
-        fallbackUnsubscribe = null;
-      }
       onState(state);
     };
     const eventHandler = (event: TripEvent & { busNo?: string }): void => {
@@ -55,30 +43,20 @@ class RealtimeService {
     socket.on('bus:state', stateHandler);
     socket.on('bus:event', eventHandler);
 
-    const fallbackTimer = setTimeout(() => {
-      if (!receivedLiveState) {
-        fallbackUnsubscribe = busSimulator.subscribe(busNo, onState, onEvent);
-      }
-    }, 8000);
-
     return () => {
-      clearTimeout(fallbackTimer);
-      fallbackUnsubscribe?.();
       socket.emit('bus:unwatch', { busNo });
       socket.off('bus:state', stateHandler);
       socket.off('bus:event', eventHandler);
     };
   }
 
-  /** Publish the driver's live state (driver side, live backend only). */
+  /** Publish the driver's live state (driver side). */
   publishDriverState(state: BusLiveState): void {
-    if (!isLiveBackend) return;
     this.ensureSocket().emit('driver:state', state);
   }
 
   /** Publish a safety event raised on the driver's phone. */
   publishEvent(busNo: string, event: TripEvent): void {
-    if (!isLiveBackend) return;
     this.ensureSocket().emit('driver:event', { ...event, busNo });
   }
 

@@ -74,6 +74,24 @@ const ParentHomeScreen: React.FC = () => {
   const { bus, events } = useBusTracking(busNo);
   const { location: simLocation } = useBusLocations(busNo);
 
+  const currentParentBusLocation = React.useMemo(() => {
+    if (bus && bus.location) {
+      return {
+        busId: busNo,
+        latitude: bus.location.latitude,
+        longitude: bus.location.longitude,
+        heading: bus.heading ?? 45,
+        speedKmh: Math.round(bus.speedKmh ?? 0),
+        status: (bus.status === 'active' ? 'on_route' : 'at_stop') as any,
+        etaMinutes: bus.etaMinutes ?? 12,
+        nextStopName: bus.nextStop ?? 'School',
+        lastUpdated: bus.updatedAt ?? Date.now(),
+        schoolName: user?.schoolName,
+      };
+    }
+    return simLocation;
+  }, [bus, simLocation, busNo, user]);
+
   const routeConfig = ALL_ROUTES.find((r) => r.busNo === busNo) ?? ALL_ROUTES[0];
   const PICKUP_STOPS = routeConfig.stops.slice(0, -1);
 
@@ -392,7 +410,7 @@ const ParentHomeScreen: React.FC = () => {
           <Animated.View entering={FadeInDown.duration(400)} style={{ marginTop: spacing.md }}>
             <View style={{ height: 260, borderRadius: 12, overflow: 'hidden' }}>
               <BusMap
-                busLocation={simLocation || null}
+                busLocation={currentParentBusLocation || null}
                 routeCoordinates={routeConfig.path.map(p => ({ latitude: p.latitude, longitude: p.longitude }))}
               />
             </View>

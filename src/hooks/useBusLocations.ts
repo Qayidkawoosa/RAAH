@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import ROUTES from '../constants/routes.generated.json';
+import { realtimeService } from '../services/realtime';
+import { tripService } from '../services/tripService';
+import { BusLiveState } from '../types/trip';
 
 export type BusStatus = 'on_route' | 'at_stop' | 'delayed' | 'signal_lost' | 'sos' | 'completed';
 
@@ -18,71 +20,83 @@ export interface BusLocation {
   complianceStatus?: string;
 }
 
-const mockLocations: Record<string, BusLocation> = {
-  'JK-01-A-1234': {
-    busId: 'JK-01-A-1234',
-    latitude: 34.1347,
-    longitude: 74.8008,
-    heading: 45,
-    speedKmh: 35,
-    status: 'on_route',
-    etaMinutes: 12,
-    nextStopName: 'Hazratbal',
-    lastUpdated: Date.now(),
-    schoolName: 'Kashmir Valley School',
-    driverName: 'Jehangir Dar',
-    complianceStatus: 'Compliant'
-  },
-  'JK-01-B-9988': {
-    busId: 'JK-01-B-9988',
-    latitude: 34.0833,
-    longitude: 74.7950,
-    heading: 120,
-    speedKmh: 52,
-    status: 'delayed', // Overspeeding/Delayed incident
-    etaMinutes: 5,
-    nextStopName: 'Lal Chowk',
-    lastUpdated: Date.now(),
-    schoolName: 'Burn Hall School',
-    driverName: 'Tariq Bhat',
-    complianceStatus: 'Insurance Expired'
-  },
-  'JK-01-C-5544': {
-    busId: 'JK-01-C-5544',
-    latitude: 34.0620,
-    longitude: 74.8010,
-    heading: 270,
-    speedKmh: 0,
-    status: 'sos', // SOS incident
-    etaMinutes: 20,
-    nextStopName: 'Jawahar Nagar',
-    lastUpdated: Date.now(),
-    schoolName: 'Presentation Convent',
-    driverName: 'Sameer Khan',
-    complianceStatus: 'Compliant'
-  }
-};
+const initialLocations: Record<string, BusLocation> = {};
+export const mockLocations = initialLocations;
 
 /**
- * Hook to get simulated bus locations.
- * In a real app, this would subscribe to the simulatorService.
+ * Hook to get real-time bus locations dynamically.
  */
 export function useBusLocations(busId?: string) {
-  const [locations, setLocations] = useState<Record<string, BusLocation>>(mockLocations);
+  const [locations, setLocations] = useState<Record<string, BusLocation>>(initialLocations);
 
   useEffect(() => {
-    // Simple interval to simulate "lastUpdated" ticks
-    const interval = setInterval(() => {
-      setLocations(prev => {
-        const next = { ...prev };
-        for (const id in next) {
-          next[id] = { ...next[id], lastUpdated: Date.now() };
-        }
-        return next;
+    let unsubscribes: (() => void)[] = [];
+    let isMounted = true;
+
+    const setupSubscriptions = async () => {
+      // 1. Global Socket.IO listener for any bus:state on the server
+      const socket = (realtimeService as any).ensureSocket?.();
+      const handleBusState = (state: BusLiveState) => {
+        if (!state?.busNo || !state.location) return;
+
+        setLocations((prev) => ({
+          ...prev,
+          [state.busNo]: {
+            busId: state.busNo,
+            latitude: state.location.latitude,
+            longitude: state.location.longitude,
+            heading: state.heading || 0,
+            speedKmh: state.speedKmh || 0,
+            status: (state.status as BusStatus) || 'on_route',
+            lastUpdated: Date.now(),
+            driverName: state.driverName || prev[state.busNo]?.driverName || 'Driver',
+            etaMinutes: state.etaMinutes ?? prev[state.busNo]?.etaMinutes ?? 0,
+            nextStopName: state.nextStop || prev[state.busNo]?.nextStopName || '',
+            schoolName: prev[state.busNo]?.schoolName || 'Kashmir Valley School',
+            complianceStatus: prev[state.busNo]?.complianceStatus || 'Compliant',
+          },
+        }));
+      };
+
+      if (socket) {
+        socket.on('bus:state', handleBusState);
+        unsubscribes.push(() => socket.off('bus:state', handleBusState));
+      }
+
+      // 2. Specific per-bus subscriptions for rooms
+      const defaultBuses = ['BUS-04', 'BUS-07', 'BUS-12', 'JK-01-A-1234'];
+      const busSet = new Set<string>(defaultBuses);
+
+      if (busId) {
+        busSet.add(busId);
+      }
+
+      try {
+        const fleet = await tripService.getFleet();
+        fleet.forEach((b) => {
+          if (b.busNo) busSet.add(b.busNo);
+        });
+      } catch {
+        // keep default set
+      }
+
+      if (!isMounted) return;
+
+      const busList = Array.from(busSet);
+
+      busList.forEach((id) => {
+        const unsub = realtimeService.subscribeToBus(id, handleBusState);
+        unsubscribes.push(unsub);
       });
-    }, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    };
+
+    setupSubscriptions();
+
+    return () => {
+      isMounted = false;
+      unsubscribes.forEach((unsub) => unsub());
+    };
+  }, [busId]);
 
   return {
     locations,

@@ -27,6 +27,112 @@ export const POSE_LANDMARKS = {
 export function extractTorsoGeometry(landmarks, canvasWidth, canvasHeight, beltSide = "AUTO") {
   if (!landmarks || landmarks.length < 25) return null;
 
+  // 1. Support MediaPipe FaceLandmarker (468/478 landmarks) fallback
+  if (landmarks.length > 50) {
+    const chin = landmarks[152];
+    const forehead = landmarks[10];
+    if (!chin || !forehead) return null;
+
+    const chinPx = { x: chin.x * canvasWidth, y: chin.y * canvasHeight };
+    const foreheadPx = { x: forehead.x * canvasWidth, y: forehead.y * canvasHeight };
+    const faceHeight = Math.max(30, Math.hypot(chinPx.x - foreheadPx.x, chinPx.y - foreheadPx.y));
+
+    const leftCheek = landmarks[234] || landmarks[33] || { x: chin.x - 0.1, y: chin.y - 0.1 };
+    const rightCheek = landmarks[454] || landmarks[263] || { x: chin.x + 0.1, y: chin.y - 0.1 };
+    const faceWidth = Math.max(30, Math.hypot(
+      (rightCheek.x - leftCheek.x) * canvasWidth,
+      (rightCheek.y - leftCheek.y) * canvasHeight
+    ));
+
+    const clavicleCenter = {
+      x: chinPx.x,
+      y: Math.min(canvasHeight - 15, chinPx.y + faceHeight * 0.40),
+    };
+
+    const halfShoulderSpan = faceWidth * 1.35;
+    const shoulderDist = halfShoulderSpan * 2;
+
+    const leftShoulderPx = {
+      x: Math.max(0, chinPx.x - halfShoulderSpan),
+      y: clavicleCenter.y + faceHeight * 0.10,
+    };
+    const rightShoulderPx = {
+      x: Math.min(canvasWidth, chinPx.x + halfShoulderSpan),
+      y: clavicleCenter.y + faceHeight * 0.10,
+    };
+
+    const estimatedTorsoHeight = shoulderDist * 1.35;
+
+    const hipHalfSpan = shoulderDist * 0.58;
+    const leftHipPx = {
+      x: Math.max(0, clavicleCenter.x - hipHalfSpan),
+      y: Math.min(canvasHeight, leftShoulderPx.y + estimatedTorsoHeight),
+    };
+    const rightHipPx = {
+      x: Math.min(canvasWidth, clavicleCenter.x + hipHalfSpan),
+      y: Math.min(canvasHeight, rightShoulderPx.y + estimatedTorsoHeight),
+    };
+
+    const hipsCenter = {
+      x: (leftHipPx.x + rightHipPx.x) / 2,
+      y: (leftHipPx.y + rightHipPx.y) / 2,
+    };
+
+    const chestHalfWidth = shoulderDist * 0.46;
+    const minX = Math.max(0, clavicleCenter.x - chestHalfWidth);
+    const maxX = Math.min(canvasWidth, clavicleCenter.x + chestHalfWidth);
+    const minY = Math.max(0, Math.min(leftShoulderPx.y, rightShoulderPx.y) + 5);
+    const maxY = Math.min(canvasHeight, Math.max(leftHipPx.y, rightHipPx.y) + 15);
+
+    const torsoRoi = {
+      x: Math.round(minX),
+      y: Math.round(minY),
+      width: Math.round(maxX - minX),
+      height: Math.round(maxY - minY),
+    };
+
+    const rightClavicleAnchor = {
+      x: clavicleCenter.x + 0.65 * (rightShoulderPx.x - clavicleCenter.x),
+      y: rightShoulderPx.y - 5,
+    };
+    const leftClavicleAnchor = {
+      x: clavicleCenter.x + 0.65 * (leftShoulderPx.x - clavicleCenter.x),
+      y: leftShoulderPx.y - 5,
+    };
+
+    const pathRHD = {
+      start: rightClavicleAnchor,
+      end: { ...leftHipPx },
+      name: "RHD (Right Clavicle -> Left Hip)",
+      side: "RHD",
+    };
+
+    const pathLHD = {
+      start: leftClavicleAnchor,
+      end: { ...rightHipPx },
+      name: "LHD (Left Clavicle -> Right Hip)",
+      side: "LHD",
+    };
+
+    return {
+      landmarks,
+      leftShoulderPx,
+      rightShoulderPx,
+      leftHipPx,
+      rightHipPx,
+      clavicleCenter,
+      hipsCenter,
+      shoulderDist,
+      torsoRoi,
+      pathRHD,
+      pathLHD,
+      selectedSide: beltSide,
+      estimatedTorsoHeight,
+    };
+  }
+
+  // 2. Standard 33 MediaPipe Pose landmarks
+
   const ls = landmarks[POSE_LANDMARKS.LEFT_SHOULDER];
   const rs = landmarks[POSE_LANDMARKS.RIGHT_SHOULDER];
   const lh = landmarks[POSE_LANDMARKS.LEFT_HIP];
@@ -46,22 +152,24 @@ export function extractTorsoGeometry(landmarks, canvasWidth, canvasHeight, beltS
     rightShoulderPx.y - leftShoulderPx.y
   );
 
-  // Typical torso height is ~1.2 - 1.4x shoulder width
-  const estimatedTorsoHeight = shoulderDist * 1.35;
-
-  const leftHipPx = lh && (lh.visibility ?? 1) > 0.3
-    ? { x: lh.x * canvasWidth, y: lh.y * canvasHeight }
-    : { x: leftShoulderPx.x, y: leftShoulderPx.y + estimatedTorsoHeight };
-
-  const rightHipPx = rh && (rh.visibility ?? 1) > 0.3
-    ? { x: rh.x * canvasWidth, y: rh.y * canvasHeight }
-    : { x: rightShoulderPx.x, y: rightShoulderPx.y + estimatedTorsoHeight };
-
-  // Clavicle center and Mid-Torso center
+  // Clavicle center (midpoint between shoulders)
   const clavicleCenter = {
     x: (leftShoulderPx.x + rightShoulderPx.x) / 2,
     y: (leftShoulderPx.y + rightShoulderPx.y) / 2,
   };
+
+  // Typical torso height is ~1.2 - 1.4x shoulder width
+  const estimatedTorsoHeight = shoulderDist * 1.35;
+
+  const hipHalfSpan = shoulderDist * 0.58;
+  const leftHipPx = lh && (lh.visibility ?? 1) > 0.35
+    ? { x: lh.x * canvasWidth, y: lh.y * canvasHeight }
+    : { x: clavicleCenter.x - hipHalfSpan, y: leftShoulderPx.y + estimatedTorsoHeight };
+
+  const rightHipPx = rh && (rh.visibility ?? 1) > 0.35
+    ? { x: rh.x * canvasWidth, y: rh.y * canvasHeight }
+    : { x: clavicleCenter.x + hipHalfSpan, y: rightShoulderPx.y + estimatedTorsoHeight };
+
   const hipsCenter = {
     x: (leftHipPx.x + rightHipPx.x) / 2,
     y: (leftHipPx.y + rightHipPx.y) / 2,
@@ -69,8 +177,10 @@ export function extractTorsoGeometry(landmarks, canvasWidth, canvasHeight, beltS
 
   // Torso bounding box: strictly bounded to driver chest and abdomen
   // Starting slightly below shoulder tops (+5px) excludes headrest, chin, and neck
-  const minX = Math.max(0, Math.min(leftShoulderPx.x, rightShoulderPx.x, leftHipPx.x, rightHipPx.x) - 10);
-  const maxX = Math.min(canvasWidth, Math.max(leftShoulderPx.x, rightShoulderPx.x, leftHipPx.x, rightHipPx.x) + 10);
+  // Chest half-width (46% of shoulder span) keeps ROI inside driver fabric, excluding curtains
+  const chestHalfWidth = shoulderDist * 0.46;
+  const minX = Math.max(0, clavicleCenter.x - chestHalfWidth);
+  const maxX = Math.min(canvasWidth, clavicleCenter.x + chestHalfWidth);
   const minY = Math.max(0, Math.min(leftShoulderPx.y, rightShoulderPx.y) + 5);
   const maxY = Math.min(canvasHeight, Math.max(leftHipPx.y, rightHipPx.y) + 15);
 
@@ -82,14 +192,14 @@ export function extractTorsoGeometry(landmarks, canvasWidth, canvasHeight, beltS
   };
 
   // Anatomical Seatbelt Clavicle Anchors
-  // In passenger vehicles and buses, the shoulder strap passes over the mid-clavicle / base of neck,
-  // NOT the outer tip of the deltoid shoulder joint.
+  // In passenger vehicles and buses, the shoulder strap passes over the mid-to-outer clavicle (~65% out from neck),
+  // creating a true 3-point sash across the sternum and ribcage.
   const rightClavicleAnchor = {
-    x: clavicleCenter.x + 0.48 * (rightShoulderPx.x - clavicleCenter.x),
+    x: clavicleCenter.x + 0.65 * (rightShoulderPx.x - clavicleCenter.x),
     y: rightShoulderPx.y - 5,
   };
   const leftClavicleAnchor = {
-    x: clavicleCenter.x + 0.48 * (leftShoulderPx.x - clavicleCenter.x),
+    x: clavicleCenter.x + 0.65 * (leftShoulderPx.x - clavicleCenter.x),
     y: leftShoulderPx.y - 5,
   };
 

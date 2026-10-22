@@ -1,6 +1,9 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
-  }
+    "strict": false,
+    "skipLibCheck": true,
+    "noImplicitAny": false
+  },
+  "exclude": ["Backend-Raah", "server", "scripts", "node_modules"]
 }

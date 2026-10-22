@@ -106,7 +106,7 @@ export function createDriverStateEngine(options = {}) {
         status = "MICROSLEEP";
         alertLevel = "CRITICAL";
         primaryReason = `Prolonged eye closure: ${(eyeState.continuousClosedMs / 1000).toFixed(1)}s`;
-      } else if (phoneState?.isConfirmed && phoneState?.isHandAssociated) {
+      } else if (phoneState?.isConfirmed && (phoneState.mode === "CALLING" || phoneState?.isHandAssociated)) {
         if (phoneState.mode === "CALLING") {
           status = "PHONE_CALL";
           alertLevel = "CRITICAL";

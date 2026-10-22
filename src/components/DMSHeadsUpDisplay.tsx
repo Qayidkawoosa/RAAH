@@ -27,9 +27,10 @@ import { LiveDriverCockpit } from './dms/LiveDriverCockpit';
 interface DMSHeadsUpDisplayProps {
   busId?: string;
   driverId?: string;
+  isTripActive?: boolean;
 }
 
-export const DMSHeadsUpDisplay: React.FC<DMSHeadsUpDisplayProps> = ({ busId, driverId }) => {
+export const DMSHeadsUpDisplay: React.FC<DMSHeadsUpDisplayProps> = ({ busId, driverId, isTripActive = true }) => {
   const { colors } = useAppTheme();
   const {
     dmsStatus,
@@ -52,12 +53,27 @@ export const DMSHeadsUpDisplay: React.FC<DMSHeadsUpDisplayProps> = ({ busId, dri
 
   const [showCockpit, setShowCockpit] = useState(false);
 
-  // Auto-start background DMS monitoring when component mounts
+  // Background DMS monitoring: only starts when explicitly enabled by driver via HUD toggle
+  // Prevents CPU locking and keeps mobile web GPS tracking lightweight and uninhibited
   useEffect(() => {
-    if (!isDmsActive && !isDmsConnecting) {
-      startBackgroundDms();
+    if (!isTripActive) {
+      if (isDmsActive || isDmsConnecting) {
+        stopBackgroundDms();
+      }
     }
-  }, []);
+    return () => {
+      if (!isTripActive) {
+        stopBackgroundDms();
+      }
+    };
+  }, [isTripActive, isDmsActive, isDmsConnecting, stopBackgroundDms]);
+
+  // Close live cockpit modal if trip is completed or inactive
+  useEffect(() => {
+    if (!isTripActive && showCockpit) {
+      setShowCockpit(false);
+    }
+  }, [isTripActive, showCockpit]);
 
   const alertCardStyle: ViewStyle = {
     ...styles.alertCard,
@@ -86,7 +102,12 @@ export const DMSHeadsUpDisplay: React.FC<DMSHeadsUpDisplayProps> = ({ busId, dri
   const isNoFace = !isDriverPresent || rawDirection === 'NO_FACE' || rawDirection === 'SEARCHING...';
   const gazeDirection = isNoFace
     ? 'NO DRIVER'
-    : rawDirection || (isDistracted ? 'LOOKING AWAY' : 'FORWARD');
+    : (rawDirection && rawDirection !== 'UNKNOWN')
+    ? rawDirection
+    : (isDistracted ? 'LOOKING AWAY' : 'FORWARD');
+
+  const isGazeDistracted = Boolean(isDistracted && gazeDirection !== 'FORWARD');
+  const gazeColor = isNoFace ? '#EF4444' : isGazeDistracted ? '#EF4444' : '#10B981';
 
   const yawAngle = typeof dmsStatus.headPose?.yaw === 'number' ? dmsStatus.headPose.yaw.toFixed(1) : '0.0';
   const pitchAngle = typeof dmsStatus.headPose?.pitch === 'number' ? dmsStatus.headPose.pitch.toFixed(1) : '0.0';
@@ -214,7 +235,7 @@ export const DMSHeadsUpDisplay: React.FC<DMSHeadsUpDisplayProps> = ({ busId, dri
                     : 'Real-time background vision active (0 video streamed)'
                   : isDmsConnecting
                   ? 'Connecting hardware & models...'
-                  : 'DMS Paused'}
+                  : 'DMS Standby · Tap Start to Enable Camera AI'}
               </Text>
             </View>
           </View>
@@ -265,7 +286,7 @@ export const DMSHeadsUpDisplay: React.FC<DMSHeadsUpDisplayProps> = ({ busId, dri
           {/* Card 1: Gaze & Direction */}
           <View style={[styles.telemetryCard, { backgroundColor: colors.background, borderColor: colors.border }]}>
             <View style={styles.telemetryCardHeader}>
-              <Compass size={14} color={isNoFace ? '#EF4444' : isDistracted ? '#EF4444' : '#10B981'} />
+              <Compass size={14} color={gazeColor} />
               <Text style={[typography.caption, { color: colors.textSecondary, fontWeight: '600' }]}>
                 DRIVER GAZE
               </Text>
@@ -273,7 +294,7 @@ export const DMSHeadsUpDisplay: React.FC<DMSHeadsUpDisplayProps> = ({ busId, dri
             <Text
               style={[
                 styles.primaryMetricText,
-                { color: isNoFace ? '#EF4444' : isDistracted ? '#EF4444' : '#10B981' },
+                { color: gazeColor },
               ]}
               numberOfLines={1}
             >

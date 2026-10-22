@@ -34,13 +34,25 @@ export function detectPhone(detector, video, timestampMs = performance.now()) {
     const topCategory = detection.categories?.[0];
     if (!topCategory) continue;
 
+    const allCategories = (detection.categories || []).map((c) => ({
+      name: c.categoryName,
+      score: Number(c.score.toFixed(2)),
+    }));
+
+    const phoneCat = detection.categories?.find(
+      (c) => c.categoryName === "cell phone" || c.categoryName === "telephone"
+    );
+
+    // Genuine cell phone candidate selection:
+    // Requires verified 'cell phone' category match
+    const isCellPhone =
+      topCategory.categoryName === "cell phone" ||
+      (phoneCat && phoneCat.score >= 0.28);
+
     const item = {
-      categoryName: topCategory.categoryName,
-      score: topCategory.score,
-      allCategories: (detection.categories || []).map((c) => ({
-        name: c.categoryName,
-        score: Number(c.score.toFixed(2)),
-      })),
+      categoryName: isCellPhone ? "cell phone" : topCategory.categoryName,
+      score: phoneCat ? Math.max(topCategory.score, phoneCat.score) : topCategory.score,
+      allCategories,
       box: detection.boundingBox || {
         originX: 0,
         originY: 0,
@@ -49,7 +61,7 @@ export function detectPhone(detector, video, timestampMs = performance.now()) {
       },
     };
 
-    if (topCategory.categoryName === "cell phone") {
+    if (isCellPhone) {
       phones.push(item);
     } else {
       otherDetections.push(item);
