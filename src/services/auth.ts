@@ -247,6 +247,8 @@ export const authService = {
           role: role.toUpperCase(),
           phone: extraDetails.phone,
           assignedBusNo: extraDetails.assignedBusNo || extraDetails.vehicleNo,
+          schoolName: extraDetails.schoolName,
+          orgSecretKey: extraDetails.orgSecretKey,
         });
 
         if (response.data?.token) {
@@ -264,8 +266,9 @@ export const authService = {
 
         await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(profile));
         return profile;
-      } catch (err) {
-        console.warn('Backend registration failed, falling back to local storage:', err);
+      } catch (err: any) {
+        console.error('Backend registration error:', err.response?.data || err.message);
+        throw new Error(err.response?.data?.message || err.message || 'Registration failed on server');
       }
     }
 
