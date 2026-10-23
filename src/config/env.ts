@@ -9,13 +9,18 @@ interface AppEnv {
 const read = (value: string | undefined): string => (value ?? '').trim();
 
 const resolveBackendUrl = (): string => {
+  const publicApi = read(process.env.EXPO_PUBLIC_API_URL);
+  if (publicApi) {
+    return publicApi.replace(/\/+$/, '');
+  }
+
   if (Platform.OS === 'web') {
     if (typeof window !== 'undefined' && window.location?.hostname) {
-      return `http://${window.location.hostname}:4000`;
+      return `${window.location.protocol}//${window.location.hostname}:4260`;
     }
-    return 'http://localhost:4000';
+    return 'http://localhost:4260';
   }
-  return read(process.env.EXPO_PUBLIC_API_URL) || 'http://192.168.2.245:4000';
+  return 'http://103.14.120.52:4260';
 };
 
 const resolvedUrl = resolveBackendUrl();
