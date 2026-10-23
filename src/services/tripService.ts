@@ -140,6 +140,7 @@ export const tripService = {
           email: driverEmail,
           name: payload.driverName,
           phone: payload.phone,
+          password: payload.password,
           role: 'driver' as const,
           vehicleNo: payload.busNo,
           assignedBusNo: payload.busNo,
@@ -148,6 +149,12 @@ export const tripService = {
         const usersRaw = await AsyncStorage.getItem('@raasta_mock_users');
         const users = usersRaw ? JSON.parse(usersRaw) : [];
         await AsyncStorage.setItem('@raasta_mock_users', JSON.stringify([...users.filter((u: any) => u.phone !== payload.phone && u.email !== driverEmail), mockDriver]));
+
+        // Also store in profiles by UID so Firebase/Offline profile stores find it immediately
+        const profilesRaw = await AsyncStorage.getItem('@raasta_profiles_by_uid');
+        const profilesMap = profilesRaw ? JSON.parse(profilesRaw) : {};
+        profilesMap[mockDriver.uid] = mockDriver;
+        await AsyncStorage.setItem('@raasta_profiles_by_uid', JSON.stringify(profilesMap));
 
         return res.data;
       },
@@ -171,6 +178,7 @@ export const tripService = {
           email: driverEmail,
           name: payload.driverName,
           phone: payload.phone,
+          password: payload.password,
           role: 'driver' as const,
           vehicleNo: payload.busNo,
           assignedBusNo: payload.busNo,
@@ -179,6 +187,11 @@ export const tripService = {
         const usersRaw = await AsyncStorage.getItem('@raasta_mock_users');
         const users = usersRaw ? JSON.parse(usersRaw) : [];
         await AsyncStorage.setItem('@raasta_mock_users', JSON.stringify([...users.filter((u: any) => u.phone !== payload.phone && u.email !== driverEmail), mockDriver]));
+
+        const profilesRaw = await AsyncStorage.getItem('@raasta_profiles_by_uid');
+        const profilesMap = profilesRaw ? JSON.parse(profilesRaw) : {};
+        profilesMap[mockDriver.uid] = mockDriver;
+        await AsyncStorage.setItem('@raasta_profiles_by_uid', JSON.stringify(profilesMap));
 
         return {
           status: 'success',

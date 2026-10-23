@@ -204,7 +204,11 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
             </Text>
             <View style={{ flexDirection: 'row', gap: 8, marginBottom: 6 }}>
               <TouchableOpacity
-                onPress={() => login('9906123456', 'password123')}
+                onPress={() => {
+                  setEmail('9906123456');
+                  setPassword('password123');
+                  login('9906123456', 'password123');
+                }}
                 style={{
                   flex: 1,
                   backgroundColor: colors.primary,
@@ -215,16 +219,46 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
                 }}
                 activeOpacity={0.8}
               >
-                <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 13 }}>
-                  🚌 Driver Dashboard
+                <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 12 }}>
+                  🚌 Demo Driver
                 </Text>
                 <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 10, marginTop: 2 }}>
-                  Phone: 9906123456
+                  9906123456
                 </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
-                onPress={() => login('school@raah.app', 'password123')}
+                onPress={() => {
+                  setEmail('9419012345');
+                  setPassword('Pass@2026');
+                  login('9419012345', 'Pass@2026');
+                }}
+                style={{
+                  flex: 1.2,
+                  backgroundColor: '#059669',
+                  paddingVertical: 10,
+                  paddingHorizontal: 8,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                  borderWidth: 1,
+                  borderColor: '#34D399',
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 12 }}>
+                  🚌 Enrolled Driver (Tariq)
+                </Text>
+                <Text style={{ color: 'rgba(255,255,255,0.9)', fontSize: 10, marginTop: 2 }}>
+                  9419012345 · Pass@2026
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => {
+                  setEmail('school@raah.app');
+                  setPassword('password123');
+                  login('school@raah.app', 'password123');
+                }}
                 style={{
                   flex: 1,
                   backgroundColor: colors.secondaryAccent || '#4F46E5',
@@ -235,7 +269,7 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
                 }}
                 activeOpacity={0.8}
               >
-                <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 13 }}>
+                <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 12 }}>
                   🏫 School Admin
                 </Text>
                 <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 10, marginTop: 2 }}>

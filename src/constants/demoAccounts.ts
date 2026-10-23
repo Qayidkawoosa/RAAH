@@ -23,6 +23,15 @@ export const DEMO_PROFILES: Record<string, Omit<UserProfile, 'uid' | 'createdAt'
     assignedBusNo: 'JK-01-A-1234',
     schoolName: 'Kashmir Valley School',
   },
+  'tariqahmaddar@kashmirschool.edu': {
+    email: 'tariqahmaddar@kashmirschool.edu',
+    name: 'Tariq Ahmad Dar',
+    role: 'driver',
+    phone: '9419012345',
+    vehicleNo: 'JK-01-AB-1234',
+    assignedBusNo: 'JK-01-AB-1234',
+    schoolName: 'Kashmir Valley School',
+  },
   'school@raah.app': {
     email: 'school@raah.app',
     name: 'Kashmir Valley School Admin',
@@ -48,6 +57,20 @@ export const demoProfileFor = (identifier: string, uid: string): UserProfile | n
       const pPhone = p.phone?.replace(/[^0-9]/g, '') || '';
       return pPhone.endsWith(cleanPhone.slice(-10)) || cleanPhone.endsWith(pPhone.slice(-10));
     });
+  }
+
+  // If driver email on the kashmirschool.edu domain (e.g. tariqahmaddar@kashmirschool.edu)
+  if (!base && clean.endsWith('@kashmirschool.edu')) {
+    const isSchoolStaff = clean.startsWith('admin') || clean.startsWith('school');
+    base = {
+      email: clean,
+      name: isSchoolStaff ? 'School Administrator' : clean.split('@')[0].replace(/[0-9]/g, '').replace(/([a-z])([A-Z])/g, '$1 $2'),
+      role: isSchoolStaff ? 'school' : 'driver',
+      phone: cleanPhone || '9419012345',
+      vehicleNo: isSchoolStaff ? undefined : 'JK-01-AB-1234',
+      assignedBusNo: isSchoolStaff ? undefined : 'JK-01-AB-1234',
+      schoolName: 'Kashmir Valley School',
+    };
   }
 
   if (!base) return null;

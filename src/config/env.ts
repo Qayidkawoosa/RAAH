@@ -1,3 +1,5 @@
+import { Platform } from 'react-native';
+
 interface AppEnv {
   apiUrl: string;
   socketUrl: string;
@@ -6,14 +8,23 @@ interface AppEnv {
 
 const read = (value: string | undefined): string => (value ?? '').trim();
 
-const DEFAULT_BACKEND_URL = 'http://103.14.120.52:4260';
+const resolveBackendUrl = (): string => {
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && window.location?.hostname) {
+      return `http://${window.location.hostname}:4000`;
+    }
+    return 'http://localhost:4000';
+  }
+  return read(process.env.EXPO_PUBLIC_API_URL) || 'http://192.168.2.245:4000';
+};
+
+const resolvedUrl = resolveBackendUrl();
 
 export const env: AppEnv = {
-  apiUrl: read(process.env.EXPO_PUBLIC_API_URL) || DEFAULT_BACKEND_URL,
+  apiUrl: resolvedUrl,
   socketUrl:
     read(process.env.EXPO_PUBLIC_SOCKET_URL) ||
-    read(process.env.EXPO_PUBLIC_API_URL) ||
-    DEFAULT_BACKEND_URL,
+    resolvedUrl,
   googleMapsApiKey: read(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY),
 };
 

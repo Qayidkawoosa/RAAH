@@ -46,18 +46,26 @@ const mapBackendUserToProfile = (
   extraDetails: Record<string, string> = {}
 ): UserProfile => {
   const roleRaw = (backendUser?.role || fallbackRole || 'parent').toLowerCase();
+  const hasVehicle = !!(
+    backendUser?.vehicleNo ||
+    backendUser?.assignedBus ||
+    backendUser?.assignedBusNo ||
+    extraDetails.vehicleNo ||
+    extraDetails.assignedBusNo
+  );
+
   const role: UserRole =
-    roleRaw === 'school_admin' || roleRaw === 'school'
-      ? 'school'
-      : roleRaw === 'driver'
+    roleRaw === 'driver' || (hasVehicle && roleRaw !== 'school_admin' && roleRaw !== 'school' && roleRaw !== 'rto')
       ? 'driver'
+      : roleRaw === 'school_admin' || roleRaw === 'school'
+      ? 'school'
       : roleRaw === 'rto'
       ? 'rto'
       : 'parent';
 
-    const busNum =
-      backendUser?.vehicleNo ||
-      backendUser?.assignedBus ||
+  const busNum =
+    backendUser?.vehicleNo ||
+    backendUser?.assignedBus ||
       backendUser?.assignedBusNo ||
       extraDetails.vehicleNo ||
       extraDetails.assignedBusNo;
@@ -169,28 +177,33 @@ export const authService = {
       
       // Retrieve stored mock users
       const usersJson = await AsyncStorage.getItem(STORAGE_KEYS.MOCK_USERS);
-      const mockUsers: UserProfile[] = usersJson ? JSON.parse(usersJson) : [];
+      const mockUsers: (UserProfile & { password?: string })[] = usersJson ? JSON.parse(usersJson) : [];
       
       const cleanPhone = formattedEmail.replace(/[^0-9]/g, '');
       const foundUser = mockUsers.find(
         (u) =>
-          u.email.toLowerCase() === formattedEmail ||
+          u.email?.toLowerCase() === formattedEmail ||
           (cleanPhone.length >= 7 && u.phone && u.phone.replace(/[^0-9]/g, '').endsWith(cleanPhone.slice(-10)))
       );
       
-      if (!foundUser) {
-        // Same demo accounts the Firebase path resolves, so roles match in
-        // both auth modes.
-        const defaultUser = demoProfileFor(formattedEmail, `mock_${cleanPhone || formattedEmail.split('@')[0]}`);
-        if (defaultUser && (password === 'password123' || password.startsWith('Pass@') || password === 'pass123')) {
-          await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(defaultUser));
-          return defaultUser;
+      if (foundUser) {
+        if (foundUser.password && foundUser.password !== password && password !== 'password123' && !password.startsWith('Pass@')) {
+          throw new Error('Invalid password for this driver account.');
         }
-        throw new Error('Invalid phone/email or password (default password is password123)');
+        if (foundUser.vehicleNo || foundUser.assignedBusNo || foundUser.email?.endsWith('@kashmirschool.edu')) {
+          foundUser.role = 'driver';
+        }
+        await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(foundUser));
+        return foundUser;
       }
 
-      await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(foundUser));
-      return foundUser;
+      // Fallback to built-in / pattern-derived demo accounts
+      const defaultUser = demoProfileFor(formattedEmail, `mock_${cleanPhone || formattedEmail.split('@')[0]}`);
+      if (defaultUser && (password === 'password123' || password.startsWith('Pass@') || password === 'pass123')) {
+        await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(defaultUser));
+        return defaultUser;
+      }
+      throw new Error('Invalid phone/email or password (default password is password123)');
     } else {
       const userCredential = await signInWithEmailAndPassword(auth, formattedEmail, password).catch(
         (error) => {

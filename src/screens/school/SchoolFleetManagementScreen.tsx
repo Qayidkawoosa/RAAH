@@ -13,10 +13,12 @@ import { useAppTheme } from '../../hooks/useAppTheme';
 import { typography } from '../../theme/typography';
 import { tripService } from '../../services/tripService';
 import { FleetBus } from '../../types/fleet';
+import { useAuth } from '../../context/AuthContext';
 
 const SchoolFleetManagementScreen: React.FC = () => {
   const navigation = useNavigation();
   const { colors, spacing } = useAppTheme();
+  const { login, logout } = useAuth();
   
   const [tab, setTab] = useState<'fleet' | 'verifications'>('fleet');
   const [fleet, setFleet] = useState<FleetBus[]>([]);
@@ -117,6 +119,28 @@ const SchoolFleetManagementScreen: React.FC = () => {
     } catch (e: any) {
       const msg = e?.response?.data?.message || e?.message || 'Failed to enroll driver and bus';
       setModalError(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSwitchToDriver = async () => {
+    if (!enrolledSuccess) return;
+    try {
+      setIsSubmitting(true);
+      const targetPhone = enrolledSuccess.phone;
+      const targetPassword = enrolledSuccess.password;
+      setShowAddModal(false);
+      setEnrolledSuccess(null);
+      await logout();
+      await login(targetPhone, targetPassword);
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to auto-switch to driver portal';
+      if (Platform.OS === 'web') {
+        window.alert(msg);
+      } else {
+        Alert.alert('Login Switch Error', msg);
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -285,18 +309,27 @@ const SchoolFleetManagementScreen: React.FC = () => {
                     The driver can now log in using their 10-digit Phone Number ({enrolledSuccess.phone}) and Password on the driver portal.
                   </Text>
 
-                  <PrimaryButton
-                    label="Done & Close"
-                    onPress={() => {
-                      setEnrolledSuccess(null);
-                      setShowAddModal(false);
-                      setDriverName('');
-                      setDriverPhone('');
-                      setBusPlateNo('');
-                      setTempPassword('Pass@2026');
-                      setModalError(null);
-                    }}
-                  />
+                  <View style={{ gap: 10 }}>
+                    <PrimaryButton
+                      label="🚀 Switch to Driver Portal Now"
+                      onPress={handleSwitchToDriver}
+                      disabled={isSubmitting}
+                    />
+
+                    <PrimaryButton
+                      label="Stay in School Admin Portal"
+                      variant="outline"
+                      onPress={() => {
+                        setEnrolledSuccess(null);
+                        setShowAddModal(false);
+                        setDriverName('');
+                        setDriverPhone('');
+                        setBusPlateNo('');
+                        setTempPassword('Pass@2026');
+                        setModalError(null);
+                      }}
+                    />
+                  </View>
                 </View>
               ) : (
                 <>
