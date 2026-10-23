@@ -1,5 +1,5 @@
 import http from 'http';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { authenticateToken, requireRoles } from './middleware/auth';
@@ -99,6 +99,15 @@ app.get('/api/test/driver-only', authenticateToken, requireRoles('driver'), (req
     message: 'Access granted! requireRoles("driver") authorized your role.',
     user: req.user,
   });
+});
+
+// Global Error Handler to catch malformed JSON and prevent server crashes
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  if (err instanceof SyntaxError && 'body' in err) {
+    return res.status(400).json({ error: 'BadRequest', message: 'Malformed JSON payload received' });
+  }
+  console.error('Unhandled server error caught by middleware:', err);
+  return res.status(500).json({ error: 'InternalServerError', message: err?.message || 'Server error' });
 });
 
 // Create Node HTTP Server and attach Socket.io
