@@ -83,17 +83,11 @@ export const tripService = {
   },
 
   async getFleet(): Promise<FleetBus[]> {
-    return liveOrDemo(
-      async () => {
-        const res = await apiClient.get<any>('/api/fleet');
-        const list = Array.isArray(res.data) ? res.data : (res.data?.buses || []);
-        return list;
-      },
-      async () => {
-        const stored = await readJson<FleetBus[]>(FLEET_KEY, demoFleet);
-        return stored;
-      }
-    );
+    if (isLiveBackend) {
+      const res = await apiClient.get<any>('/api/fleet');
+      return res.data?.buses || res.data || [];
+    }
+    return readJson<FleetBus[]>(FLEET_KEY, demoFleet);
   },
 
   async addFleetBus(busNo: string, driverName: string, routeName: string): Promise<FleetBus> {
@@ -124,83 +118,57 @@ export const tripService = {
     password: string;
     schoolId?: string;
   }): Promise<{ status: string; driverEmail: string; busNo: string; routeId: string }> {
+    if (isLiveBackend) {
+      const res = await apiClient.post<{ status: string; driverEmail: string; busNo: string; routeId: string }>(
+        '/api/fleet/enroll-driver',
+        payload
+      );
+      return res.data;
+    }
+
     const matchedRoute = ALL_ROUTES.find((r) => r.id === payload.routeId) || ALL_ROUTES[0];
     const routeName = matchedRoute?.routeName || 'Assigned Planned Route';
 
-    return liveOrDemo(
-      async () => {
-        const res = await apiClient.post<{ status: string; driverEmail: string; busNo: string; routeId: string }>(
-          '/api/fleet/enroll-driver',
-          payload
-        );
-        // Also cache locally for offline demo resilience
-        const driverEmail = res.data.driverEmail;
-        const mockDriver = {
-          uid: `driver_${payload.phone}`,
-          email: driverEmail,
-          name: payload.driverName,
-          phone: payload.phone,
-          password: payload.password,
-          role: 'driver' as const,
-          vehicleNo: payload.busNo,
-          assignedBusNo: payload.busNo,
-          schoolName: 'Kashmir Valley School',
-        };
-        const usersRaw = await AsyncStorage.getItem('@raasta_mock_users');
-        const users = usersRaw ? JSON.parse(usersRaw) : [];
-        await AsyncStorage.setItem('@raasta_mock_users', JSON.stringify([...users.filter((u: any) => u.phone !== payload.phone && u.email !== driverEmail), mockDriver]));
+    const driverEmail = payload.driverName.toLowerCase().replace(/\s+/g, '') + '@kashmirschool.edu';
+    const newBus: FleetBus = {
+      busNo: payload.busNo,
+      driverName: payload.driverName,
+      routeName: routeName,
+      status: 'idle',
+      studentsOnBoard: 0,
+      safetyScore: 100,
+    };
+    const stored = await readJson<FleetBus[]>(FLEET_KEY, demoFleet);
+    const updated = [...stored.filter((b) => b.busNo !== payload.busNo), newBus];
+    await AsyncStorage.setItem(FLEET_KEY, JSON.stringify(updated));
 
-        // Also store in profiles by UID so Firebase/Offline profile stores find it immediately
-        const profilesRaw = await AsyncStorage.getItem('@raasta_profiles_by_uid');
-        const profilesMap = profilesRaw ? JSON.parse(profilesRaw) : {};
-        profilesMap[mockDriver.uid] = mockDriver;
-        await AsyncStorage.setItem('@raasta_profiles_by_uid', JSON.stringify(profilesMap));
+    // Save mock driver user with phone number for phone-based login
+    const mockDriver = {
+      uid: `driver_${payload.phone}`,
+      email: driverEmail,
+      name: payload.driverName,
+      phone: payload.phone,
+      password: payload.password,
+      role: 'driver' as const,
+      vehicleNo: payload.busNo,
+      assignedBusNo: payload.busNo,
+      schoolName: 'Kashmir Valley School',
+    };
+    const usersRaw = await AsyncStorage.getItem('@raasta_mock_users');
+    const users = usersRaw ? JSON.parse(usersRaw) : [];
+    await AsyncStorage.setItem('@raasta_mock_users', JSON.stringify([...users.filter((u: any) => u.phone !== payload.phone && u.email !== driverEmail), mockDriver]));
 
-        return res.data;
-      },
-      async () => {
-        const driverEmail = payload.driverName.toLowerCase().replace(/\s+/g, '') + '@kashmirschool.edu';
-        const newBus: FleetBus = {
-          busNo: payload.busNo,
-          driverName: payload.driverName,
-          routeName: routeName,
-          status: 'idle',
-          studentsOnBoard: 0,
-          safetyScore: 100,
-        };
-        const stored = await readJson<FleetBus[]>(FLEET_KEY, demoFleet);
-        const updated = [...stored.filter((b) => b.busNo !== payload.busNo), newBus];
-        await AsyncStorage.setItem(FLEET_KEY, JSON.stringify(updated));
+    const profilesRaw = await AsyncStorage.getItem('@raasta_profiles_by_uid');
+    const profilesMap = profilesRaw ? JSON.parse(profilesRaw) : {};
+    profilesMap[mockDriver.uid] = mockDriver;
+    await AsyncStorage.setItem('@raasta_profiles_by_uid', JSON.stringify(profilesMap));
 
-        // Save mock driver user with phone number for phone-based login
-        const mockDriver = {
-          uid: `driver_${payload.phone}`,
-          email: driverEmail,
-          name: payload.driverName,
-          phone: payload.phone,
-          password: payload.password,
-          role: 'driver' as const,
-          vehicleNo: payload.busNo,
-          assignedBusNo: payload.busNo,
-          schoolName: 'Kashmir Valley School',
-        };
-        const usersRaw = await AsyncStorage.getItem('@raasta_mock_users');
-        const users = usersRaw ? JSON.parse(usersRaw) : [];
-        await AsyncStorage.setItem('@raasta_mock_users', JSON.stringify([...users.filter((u: any) => u.phone !== payload.phone && u.email !== driverEmail), mockDriver]));
-
-        const profilesRaw = await AsyncStorage.getItem('@raasta_profiles_by_uid');
-        const profilesMap = profilesRaw ? JSON.parse(profilesRaw) : {};
-        profilesMap[mockDriver.uid] = mockDriver;
-        await AsyncStorage.setItem('@raasta_profiles_by_uid', JSON.stringify(profilesMap));
-
-        return {
-          status: 'success',
-          driverEmail,
-          busNo: payload.busNo,
-          routeId: payload.routeId,
-        };
-      }
-    );
+    return {
+      status: 'success',
+      driverEmail,
+      busNo: payload.busNo,
+      routeId: payload.routeId,
+    };
   },
 
   async getRoutes(): Promise<any[]> {

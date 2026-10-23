@@ -8,7 +8,10 @@ export interface ApiClientInstance extends AxiosInstance {
 const baseClient = axios.create({
   baseURL: env.apiUrl,
   timeout: 15_000,
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'ngrok-skip-browser-warning': '69420',
+  },
 });
 
 /**
