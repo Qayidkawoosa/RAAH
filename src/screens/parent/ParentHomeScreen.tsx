@@ -175,14 +175,18 @@ const ParentHomeScreen: React.FC = () => {
     tripService
       .getStudents()
       .then((allStudents) => {
-        const parentName = user?.name ?? 'Amina Shah';
-        const myStudents = allStudents.filter((s) => s.parentName === parentName);
+        const parentName = user?.name || '';
+        const myStudents = parentName
+          ? allStudents.filter((s) => s.parentName && s.parentName.trim().toLowerCase() === parentName.trim().toLowerCase())
+          : [];
         setStudents(myStudents);
         if (myStudents.length > 0) {
           setSelectedStudent(myStudents[0]);
           if (myStudents[0].pickupStop) {
             setPickupName(myStudents[0].pickupStop);
           }
+        } else {
+          setSelectedStudent(null);
         }
       })
       .catch((err) => console.error('Error fetching students for parent:', err));

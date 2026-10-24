@@ -16,12 +16,7 @@ import {
 import {
   buildDemoHistory,
   demoAnalytics,
-  demoComplaints,
-  demoCompliance,
   demoFleet,
-  demoRankings,
-  demoStudents,
-  demoViolations,
 } from './demo/demoData';
 import { createId } from '../utils/id';
 import { ALL_ROUTES } from '../constants/demoRoute';
@@ -267,22 +262,21 @@ export const tripService = {
   async getRankings(): Promise<DriverRanking[]> {
     return liveOrDemo(
       async () => (await apiClient.get<DriverRanking[]>('/api/rankings')).data,
-      async () => demoRankings
+      async () => []
     );
   },
 
   async getComplaints(): Promise<Complaint[]> {
-    const demo = async (): Promise<Complaint[]> => {
-      const stored = await readJson<Complaint[]>(COMPLAINTS_KEY, []);
-      return [...stored, ...demoComplaints];
-    };
-    return liveOrDemo(async () => {
-      const { data } = await apiClient.get<Complaint[]>('/api/complaints');
-      if (data.length === 0) return demo();
-      // Older documents may lack an id; assign one locally so list keys and
-      // status updates always target exactly one complaint.
-      return data.map((item) => (item.id ? item : { ...item, id: createId('cmp') }));
-    }, demo);
+    return liveOrDemo(
+      async () => {
+        const { data } = await apiClient.get<Complaint[]>('/api/complaints');
+        if (!data || data.length === 0) return [];
+        // Older documents may lack an id; assign one locally so list keys and
+        // status updates always target exactly one complaint.
+        return data.map((item) => (item.id ? item : { ...item, id: createId('cmp') }));
+      },
+      async () => readJson<Complaint[]>(COMPLAINTS_KEY, [])
+    );
   },
 
   async submitComplaint(
@@ -314,17 +308,7 @@ export const tripService = {
   async getStudents(): Promise<Student[]> {
     return liveOrDemo(
       async () => (await apiClient.get<Student[]>('/api/students')).data,
-      async () => {
-        const stored = await readJson<Student[]>(STUDENTS_KEY, []);
-        const merged = [...stored];
-        for (const defaultStu of demoStudents) {
-          if (!merged.some((s) => s.id === defaultStu.id)) {
-            merged.push(defaultStu);
-          }
-        }
-        await AsyncStorage.setItem(STUDENTS_KEY, JSON.stringify(merged));
-        return merged;
-      }
+      async () => readJson<Student[]>(STUDENTS_KEY, [])
     );
   },
 
@@ -340,7 +324,7 @@ export const tripService = {
         (await apiClient.post<Student>('/api/students', { name, className, busNo, pickupStop }))
           .data,
       async () => {
-        const stored = await readJson<Student[]>(STUDENTS_KEY, demoStudents);
+        const stored = await readJson<Student[]>(STUDENTS_KEY, []);
         await AsyncStorage.setItem(STUDENTS_KEY, JSON.stringify([...stored, student]));
         return student;
       }
@@ -353,7 +337,7 @@ export const tripService = {
         await apiClient.delete(`/api/students/${id}`);
       },
       async () => {
-        const stored = await readJson<Student[]>(STUDENTS_KEY, demoStudents);
+        const stored = await readJson<Student[]>(STUDENTS_KEY, []);
         await AsyncStorage.setItem(
           STUDENTS_KEY,
           JSON.stringify(stored.filter((student) => student.id !== id))
@@ -391,14 +375,14 @@ export const tripService = {
   async getCompliance(): Promise<ComplianceRecord[]> {
     return liveOrDemo(
       async () => (await apiClient.get<ComplianceRecord[]>('/api/compliance')).data,
-      async () => demoCompliance
+      async () => []
     );
   },
 
   async getViolations(): Promise<ViolationRecord[]> {
     return liveOrDemo(
       async () => (await apiClient.get<ViolationRecord[]>('/api/violations')).data,
-      async () => demoViolations
+      async () => []
     );
   },
 
@@ -415,7 +399,7 @@ export const tripService = {
     return liveOrDemo(
       async () => (await apiClient.patch<Student>(`/api/students/${id}/link`, { parentName })).data,
       async () => {
-        const stored = await readJson<Student[]>(STUDENTS_KEY, demoStudents);
+        const stored = await readJson<Student[]>(STUDENTS_KEY, []);
         const index = stored.findIndex((s) => s.id.toLowerCase() === id);
         if (index !== -1) {
           stored[index].parentName = parentName;

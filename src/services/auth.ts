@@ -168,7 +168,8 @@ export const authService = {
         await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(profile));
         return profile;
       } catch (err: any) {
-        console.warn('Backend login failed, attempting local fallback:', err?.message);
+        console.error('Backend login error:', err.response?.data || err.message);
+        throw new Error(err.response?.data?.message || err.message || 'Login failed on server');
       }
     }
 

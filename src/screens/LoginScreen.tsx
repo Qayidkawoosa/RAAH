@@ -197,87 +197,6 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
             </TouchableOpacity>
           </View>
 
-          {/* 1-Click Demo Logins */}
-          <View style={[styles.quickAccessCard, { backgroundColor: colors.surface, borderColor: colors.border, padding: 12 }]}>
-            <Text style={[styles.quickAccessTitle, { color: colors.textPrimary, marginBottom: 8, textAlign: 'center' }]}>
-              🚀 1-Click Demo Portals (Instant Launch):
-            </Text>
-            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 6 }}>
-              <TouchableOpacity
-                onPress={() => {
-                  setEmail('9906123456');
-                  setPassword('password123');
-                  login('9906123456', 'password123');
-                }}
-                style={{
-                  flex: 1,
-                  backgroundColor: colors.primary,
-                  paddingVertical: 10,
-                  paddingHorizontal: 8,
-                  borderRadius: 8,
-                  alignItems: 'center',
-                }}
-                activeOpacity={0.8}
-              >
-                <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 12 }}>
-                  🚌 Demo Driver
-                </Text>
-                <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 10, marginTop: 2 }}>
-                  9906123456
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => {
-                  setEmail('9419012345');
-                  setPassword('Pass@2026');
-                  login('9419012345', 'Pass@2026');
-                }}
-                style={{
-                  flex: 1.2,
-                  backgroundColor: '#059669',
-                  paddingVertical: 10,
-                  paddingHorizontal: 8,
-                  borderRadius: 8,
-                  alignItems: 'center',
-                  borderWidth: 1,
-                  borderColor: '#34D399',
-                }}
-                activeOpacity={0.8}
-              >
-                <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 12 }}>
-                  🚌 Enrolled Driver (Tariq)
-                </Text>
-                <Text style={{ color: 'rgba(255,255,255,0.9)', fontSize: 10, marginTop: 2 }}>
-                  9419012345 · Pass@2026
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => {
-                  setEmail('school@raah.app');
-                  setPassword('password123');
-                  login('school@raah.app', 'password123');
-                }}
-                style={{
-                  flex: 1,
-                  backgroundColor: colors.secondaryAccent || '#4F46E5',
-                  paddingVertical: 10,
-                  paddingHorizontal: 8,
-                  borderRadius: 8,
-                  alignItems: 'center',
-                }}
-                activeOpacity={0.8}
-              >
-                <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 12 }}>
-                  🏫 School Admin
-                </Text>
-                <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 10, marginTop: 2 }}>
-                  school@raah.app
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -397,22 +316,6 @@ const styles = StyleSheet.create({
   footerLink: {
     fontFamily: 'Poppins-Bold',
     fontSize: 13,
-  },
-  quickAccessCard: {
-    padding: 16,
-    borderRadius: 16,
-    marginTop: 8,
-    borderWidth: 1,
-  },
-  quickAccessTitle: {
-    fontFamily: 'Poppins-SemiBold',
-    fontSize: 12,
-    marginBottom: 6,
-  },
-  quickAccessCreds: {
-    fontFamily: 'Poppins-Regular',
-    fontSize: 11,
-    lineHeight: 16,
   },
 });
 

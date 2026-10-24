@@ -23,7 +23,7 @@ import { aiService } from '../../services/aiService';
 import { AnalyticsSummary, FleetBus, Student, SafetyEvent } from '../../types/fleet';
 import { WeeklyInsight } from '../../types/ai';
 import { useBusTracking } from '../../hooks/useBusTracking';
-import { DEMO_BUS_NO, ALL_ROUTES } from '../../constants/demoRoute';
+import { ALL_ROUTES } from '../../constants/demoRoute';
 import { AppStackParamList } from '../../navigation/types';
 import { busStatusBadge } from '../../utils/busStatus';
 import { BusMap } from '../../components/BusMap';
@@ -63,7 +63,7 @@ const SchoolDashboardScreen: React.FC = () => {
   const [students, setStudents] = useState<Student[] | null>(null);
   const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [insights, setInsights] = useState<WeeklyInsight[] | null>(null);
-  const [selectedBusNo, setSelectedBusNo] = useState(DEMO_BUS_NO);
+  const [selectedBusNo, setSelectedBusNo] = useState('');
   const { bus: liveBus, events } = useBusTracking(selectedBusNo);
   const { locations } = useBusLocations();
   
@@ -76,7 +76,15 @@ const SchoolDashboardScreen: React.FC = () => {
   // the rest of the dashboard.
   const load = useCallback(async (): Promise<void> => {
     await Promise.allSettled([
-      tripService.getFleet().then(setFleet).catch(() => setFleet([])),
+      tripService
+        .getFleet()
+        .then((buses) => {
+          setFleet(buses);
+          if (buses && buses.length > 0 && buses[0]?.busNo) {
+            setSelectedBusNo(buses[0].busNo);
+          }
+        })
+        .catch(() => setFleet([])),
       tripService.getStudents().then(setStudents).catch(() => setStudents([])),
       tripService.getAnalytics().then(setAnalytics).catch(() => setAnalytics(null)),
       aiService.getWeeklyInsights().then(setInsights).catch(() => setInsights([])),
